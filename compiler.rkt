@@ -9,24 +9,63 @@
 (require "utilities.rkt")
 (provide (all-defined-out))
 
+(define (flip p)
+  (define (flip-e e)
+    (match e
+      [(Int n) (Int n)]
+      [(Var x) (Var x)]
+      [(Prim op (list e1 e2)) (Prim op (list (flip-e e2) (flip-e e1)))]
+      [(Prim op es) (Prim op (for/list [(e es)] (flip-e e)))]
+      [(Let x rhs body) (Let x (flip-e rhs) (flip-e body))]
+      [_ (error "Nothing matches")]))
+
+  (match p
+    [(Program info body)
+     (Program info (flip-e body))]))
+
 
 (define (uniquify-exp env)    ;; TODO: this function currently does nothing. Your code goes here
   (lambda (e)
     (match e
-      [(Var x) (Var x)]
+      [(Var x) (Var (dict-ref env x))]
       [(Int n) (Int n)]
-      [(Let x e body) (Let x e body)]
+      [(Let x e body) 
+	   (let ([sub-env (dict-set env x (gensym x))])
+		 (Let (dict-ref sub-env x) ((uniquify-exp env) e) ((uniquify-exp sub-env) body)))]
       [(Prim op es)
        (Prim op (for/list ([e es]) ((uniquify-exp env) e)))])))
 
-;; uniquify : Lvar -> Lvar
-(define (uniquify p)
-  (match p
-    [(Program info e) (Program info ((uniquify-exp '()) e))]))
+; uniquify : Lvar -> Lvar
+ (define (uniquify p)
+   (match p
+     [(Program info e) (Program info ((uniquify-exp '()) e))]))
 
+(define (remove-complex-opera-exp env)    ;; TODO: this function currently does nothing. Your code goes here
+  (lambda (e)
+    (match e
+      [(Var x) (Var x)]
+      [(Int n) (Int n)]
+      [(Let x e body) (Let x (remove-complex-opera-exp e) (remove-complex-opera-exp body))]
+      [(Prim op es)
+	   (cond
+		 [(eq? (length es) 1) (if (atm? (first es))
+								(Prim op es)
+								(let ([x (gensym 'tmp)]) 
+										   (Let x ((remove-complex-opera-exp env) (first es)) (Prim op (list (Var x))))))]
+		 [(eq? (length es) 2) 
+		  (cond
+			[(not (atm? (first es))) (let ([x (gensym 'tmp)])
+									   (Let x ((remove-complex-opera-exp env) (first es)) ((remove-complex-opera-exp env) (Prim op (cons (Var x) (cdr es))))))]
+			[(not (atm? (last es))) (let ([x (gensym 'tmp)])
+									   (Let x ((remove-complex-opera-exp env) (last es)) ((remove-complex-opera-exp env) (Prim op (list (car es) (Var x))))))]
+			[else (Prim op es)])
+		  ]
+		 [else (Prim op es)]
+		 )])))
 ;; remove-complex-opera* : Lvar -> Lvar^mon
 (define (remove-complex-opera* p)
-  (error "TODO: code goes here (remove-complex-opera*)"))
+   (match p
+     [(Program info e) (Program info ((remove-complex-opera-exp '()) e))]))
 
 ;; explicate-control : Lvar^mon -> Cvar
 (define (explicate-control p)
@@ -54,8 +93,9 @@
 (define compiler-passes
   `(
      ;; Uncomment the following passes as you finish them.
+     ;; ("flip", flip, interp-Lvar, type-check-Lvar)
      ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
-     ;; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
+     ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
      ;; ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
      ;; ("instruction selection" ,select-instructions ,interp-x86-0)
      ;; ("assign homes" ,assign-homes ,interp-x86-0)
