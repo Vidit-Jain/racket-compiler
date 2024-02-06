@@ -9,21 +9,6 @@
 (require "utilities.rkt")
 (provide (all-defined-out))
 
-(define (flip p)
-  (define (flip-e e)
-    (match e
-      [(Int n) (Int n)]
-      [(Var x) (Var x)]
-      [(Prim op (list e1 e2)) (Prim op (list (flip-e e2) (flip-e e1)))]
-      [(Prim op es) (Prim op (for/list [(e es)] (flip-e e)))]
-      [(Let x rhs body) (Let x (flip-e rhs) (flip-e body))]
-      [_ (error "Nothing matches")]))
-
-  (match p
-    [(Program info body)
-     (Program info (flip-e body))]))
-
-
 (define (uniquify-exp env)    ;; TODO: this function currently does nothing. Your code goes here
   (lambda (e)
     (match e
@@ -93,7 +78,6 @@
 (define compiler-passes
   `(
      ;; Uncomment the following passes as you finish them.
-     ;; ("flip", flip, interp-Lvar, type-check-Lvar)
      ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
      ;; ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
