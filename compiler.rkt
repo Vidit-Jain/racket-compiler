@@ -45,7 +45,7 @@
     (match e
       [(Var x) (Var x)]
       [(Int n) (Int n)]
-      [(Let x e body) (Let x (remove-complex-opera-exp e) (remove-complex-opera-exp body))]
+      [(Let x e body) (Let x ((remove-complex-opera-exp env) e) ((remove-complex-opera-exp env) body))]
       [(Prim op es)
 	   (cond
 		 [(eq? (length es) 1) (if (atm? (first es))
