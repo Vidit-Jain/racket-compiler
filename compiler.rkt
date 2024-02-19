@@ -5,6 +5,7 @@
 (require "type-check-Lvar.rkt")
 (require "type-check-Cvar.rkt")
 (require "utilities.rkt")
+(require "interp.rkt")
 (provide (all-defined-out))
 
 (define (uniquify-exp env)    ;; TODO: this function currently does nothing. Your code goes here
@@ -84,28 +85,26 @@
 	[(Int x) (Imm x)])
   )
 (define (select-stmt e)
-  (match exp
+  (match e 
 	[(Assign x e)
-		(match e
-		  [(atm? e) (list (Instr 'movq (list (select-atm e) x)))]
-		  [(Prim 'read '()) (list (Callq 'read_int 1) (Instr 'movq (list (Reg 'rax) x)))]
-		  [(Prim '- (list a)) (list (Instr 'movq (list (select-atm a) x)) (Instr 'negq (list x)))]
-		  [(Prim '+ (list a b)) (cond
-								[(equal? x a) (list (Instr 'addq (select-atm b) a))]
-								[(equal? x b) (list (Instr 'addq (select-atm a) b))]
-								[(list (Instr 'movq (select-atm a) x) (Instr 'addq (select-atm b) x))]
-								)]
-		  [(Prim '- (list a b)) (cond
-								[(equal? x a) (list (Instr 'subq (select-atm b) a))]
-								[(list (Instr 'movq (select-atm a) x) (Instr 'subq (select-atm b) x))]
-		  )]
-	
-	)
-  )
+	 	(if (atm? e)
+		  (list (Instr 'movq (list (select-atm e) x)))
+			(match e
+				[(Prim 'read '()) (list (Callq 'read_int 1) (Instr 'movq (list (Reg 'rax) x)))]
+				[(Prim '- (list a)) (list (Instr 'movq (list (select-atm a) x)) (Instr 'negq (list x)))]
+				[(Prim '+ (list a b)) (cond
+									[(equal? x a) (list (Instr 'addq (list (select-atm b) a)))]
+									[(equal? x b) (list (Instr 'addq (list (select-atm a) b)))]
+									[(list (Instr 'movq (list (select-atm a) x)) (Instr 'addq (list (select-atm b) x)))]
+									)]
+				[(Prim '- (list a b)) (cond
+									[(equal? x a) (list (Instr 'addq (list (select-atm b) a)))]
+									[(list (Instr 'movq (list (select-atm a) x)) (Instr 'subq (list (select-atm b) x)))])]))]))
 
 ;; select-instructions : Cvar -> x86var
 (define (select-instructions p)
-  (error "TODO: code goes here (select-instructions)"))
+  (match p 
+	[(CProgram info (list (cons 'start e))) (X86Program info (list (cons 'start (Block '() (select-tail e)))))]))
 
 ;; assign-homes : x86var -> x86var
 (define (assign-homes p)
@@ -128,7 +127,7 @@
      ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
      ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
-     ("instruction selection" ,select-instructions ,interp-x86-0)
+     ("instruction selection" ,select-instructions, interp-x86-0)
      ;; ("assign homes" ,assign-homes ,interp-x86-0)
      ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
      ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
