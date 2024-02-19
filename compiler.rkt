@@ -107,13 +107,72 @@
 (define (select-instructions p)
   (error "TODO: code goes here (select-instructions)"))
 
+(define (assign-var-offset var-list var-map offset)
+  (match var-list
+    ['() (values var-map offset)]
+    [(list (cons var 'Integer) rest)
+     (assign-var-offset rest (dict-set var-map var (+ offset 8)) (+ offset 8))]))
+
+(define (assign-homes-var env)
+  (lambda (var)
+    (match (var)
+      [(Imm i) (Imm i)]
+      [(Reg r) (Reg r)]
+      [(Var x) (Deref 'rbp (- (dict-ref env x)))])))
+
+(define (assign-homes-instr env)
+  (lambda (instr)
+    (match instr
+      [(Instr name args)
+       (Instr name
+              (for/list ([arg args])
+                ((assign-homes-var env) arg)))]
+      [_ instr])))
+
 ;; assign-homes : x86var -> x86var
 (define (assign-homes p)
-  (error "TODO: code goes here (assign-homes)"))
+  (match p
+    [(X86Program info (list (cons label (Block info instrs))))
+     (let (var-list
+           [dict-ref
+            info
+            'local-types])
+       (let-values ([(var-map total-space) (assign-var-offset var-list '() 0)])
+         (dict-set info 'stack-space total-space)
+         (X86Program info
+                     (list (cons label
+                                 (Block info
+                                        (for/list ([instr instrs])
+                                          ((assign-homes-instr var-map) instr))))))))]))
+
+  ;(error "TODO: code goes here (assign-homes)"))
+
+(define (big-int? x)
+	(> x (expt 2 16)))
+
+(define (patch-instruction instr)
+  (match instr
+    [(Instr name (list (? big-int? i) (Deref reg offset)))
+     (list (Instr 'movq (list (Imm i) (Reg 'rax))) (Instr name (list (Reg 'rax) (Deref reg offset))))]
+    [(Instr name (list (Deref reg offset) (? big-int? i)))
+     (list (Instr 'movq (list (Imm i) (Reg 'rax))) (Instr name (list (Deref reg offset) (Reg 'rax))))]
+    [(Instr name (list (Deref reg offset1) (Deref reg offset2)))
+     (list (Instr 'movq (list (Deref reg offset2) (Reg 'rax)))
+           (Instr name (list (Deref reg offset1) (Reg 'rax)))
+           (Instr 'movq (list (Reg 'rax) (Deref reg offset2))))]))
 
 ;; patch-instructions : x86var -> x86int
 (define (patch-instructions p)
-  (error "TODO: code goes here (patch-instructions)"))
+  (match p
+    [(X86Program info (list (cons label (Block info instrs))))
+     (X86Program info
+                 (list (cons label
+                             (Block info
+                                    (foldr (lambda (instr acc) (append (patch-instruction instr) acc))
+                                           '()
+                                           instrs)))))]))
+
+  ;(error "TODO: code goes here (patch-instructions)"))
 
 ;; prelude-and-conclusion : x86int -> x86int
 (define (prelude-and-conclusion p)
@@ -129,7 +188,7 @@
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
      ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
      ("instruction selection" ,select-instructions ,interp-x86-0)
-     ;; ("assign homes" ,assign-homes ,interp-x86-0)
-     ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
+     ("assign homes" ,assign-homes ,interp-x86-0)
+     ("patch instructions" ,patch-instructions ,interp-x86-0)
      ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ))
