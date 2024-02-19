@@ -189,7 +189,7 @@
     [(X86Program info (list (cons label (Block '() instrs))))
      (X86Program
       info
-      (list (cons label (Block '() instrs))
+      (list (cons label (Block '() (append instrs (list (Jmp 'conclusion)))))
             (cons 'main
                   (Block '()
                          (list (Instr 'pushq (list (Reg 'rbp)))
