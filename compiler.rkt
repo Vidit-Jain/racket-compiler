@@ -5,6 +5,7 @@
 (require "type-check-Lvar.rkt")
 (require "type-check-Cvar.rkt")
 (require "utilities.rkt")
+(require "interp.rkt")
 (provide (all-defined-out))
 
 (define (uniquify-exp env)    ;; TODO: this function currently does nothing. Your code goes here
@@ -84,38 +85,37 @@
 	[(Int x) (Imm x)])
   )
 (define (select-stmt e)
-  (match exp
+  (match e 
 	[(Assign x e)
-		(match e
-		  [(atm? e) (list (Instr 'movq (list (select-atm e) x)))]
-		  [(Prim 'read '()) (list (Callq 'read_int 1) (Instr 'movq (list (Reg 'rax) x)))]
-		  [(Prim '- (list a)) (list (Instr 'movq (list (select-atm a) x)) (Instr 'negq (list x)))]
-		  [(Prim '+ (list a b)) (cond
-								[(equal? x a) (list (Instr 'addq (select-atm b) a))]
-								[(equal? x b) (list (Instr 'addq (select-atm a) b))]
-								[(list (Instr 'movq (select-atm a) x) (Instr 'addq (select-atm b) x))]
-								)]
-		  [(Prim '- (list a b)) (cond
-								[(equal? x a) (list (Instr 'subq (select-atm b) a))]
-								[(list (Instr 'movq (select-atm a) x) (Instr 'subq (select-atm b) x))]
-		  )]
-	
-	)
-  )
+	 	(if (atm? e)
+		  (list (Instr 'movq (list (select-atm e) x)))
+			(match e
+				[(Prim 'read '()) (list (Callq 'read_int 1) (Instr 'movq (list (Reg 'rax) x)))]
+				[(Prim '- (list a)) (list (Instr 'movq (list (select-atm a) x)) (Instr 'negq (list x)))]
+				[(Prim '+ (list a b)) (cond
+									[(equal? x a) (list (Instr 'addq (list (select-atm b) a)))]
+									[(equal? x b) (list (Instr 'addq (list (select-atm a) b)))]
+									[(list (Instr 'movq (list (select-atm a) x)) (Instr 'addq (list (select-atm b) x)))]
+									)]
+				[(Prim '- (list a b)) (cond
+									[(equal? x a) (list (Instr 'addq (list (select-atm b) a)))]
+									[(list (Instr 'movq (list (select-atm a) x)) (Instr 'subq (list (select-atm b) x)))])]))]))
 
 ;; select-instructions : Cvar -> x86var
 (define (select-instructions p)
-  (error "TODO: code goes here (select-instructions)"))
+  (match p 
+	[(CProgram info (list (cons 'start e))) (X86Program info (list (cons 'start (Block '() (select-tail e)))))]))
 
-(define (assign-var-offset var-list var-map offset)
+(define (assign-var-offset var-list)
   (match var-list
-    ['() (values var-map offset)]
-    [(list (cons var 'Integer) rest)
-     (assign-var-offset rest (dict-set var-map var (+ offset 8)) (+ offset 8))]))
+    ['() (values '() 0)]
+    [(list (cons var 'Integer) rest ...)
+     (let-values ([(var-map offset) (assign-var-offset rest)])
+       (values (dict-set var-map var (+ offset 8)) (+ offset 8)))]))
 
 (define (assign-homes-var env)
   (lambda (var)
-    (match (var)
+    (match var
       [(Imm i) (Imm i)]
       [(Reg r) (Reg r)]
       [(Var x) (Deref 'rbp (- (dict-ref env x)))])))
@@ -132,16 +132,16 @@
 ;; assign-homes : x86var -> x86var
 (define (assign-homes p)
   (match p
-    [(X86Program info (list (cons label (Block info instrs))))
-     (let (var-list
-           [dict-ref
+    [(X86Program info (list (cons label (Block '() instrs))))
+     (let [(var-list
+           (dict-ref
             info
-            'local-types])
-       (let-values ([(var-map total-space) (assign-var-offset var-list '() 0)])
+            'locals-types))]
+       (let-values ([(var-map total-space) (assign-var-offset var-list)])
          (dict-set info 'stack-space total-space)
          (X86Program info
                      (list (cons label
-                                 (Block info
+                                 (Block '()
                                         (for/list ([instr instrs])
                                           ((assign-homes-instr var-map) instr))))))))]))
 
@@ -152,22 +152,23 @@
 
 (define (patch-instruction instr)
   (match instr
-    [(Instr name (list (? big-int? i) (Deref reg offset)))
+    [(Instr name (list (Imm (? big-int? i)) (Deref reg offset)))
      (list (Instr 'movq (list (Imm i) (Reg 'rax))) (Instr name (list (Reg 'rax) (Deref reg offset))))]
-    [(Instr name (list (Deref reg offset) (? big-int? i)))
+    [(Instr name (list (Deref reg offset) (Imm (? big-int? i))))
      (list (Instr 'movq (list (Imm i) (Reg 'rax))) (Instr name (list (Deref reg offset) (Reg 'rax))))]
     [(Instr name (list (Deref reg offset1) (Deref reg offset2)))
-     (list (Instr 'movq (list (Deref reg offset2) (Reg 'rax)))
-           (Instr name (list (Deref reg offset1) (Reg 'rax)))
-           (Instr 'movq (list (Reg 'rax) (Deref reg offset2))))]))
-
+     (list (Instr 'movq (list (Deref reg offset1) (Reg 'rax)))
+        ;;;    (Instr name (list (Deref reg offset1) (Reg 'rax)))
+           (Instr name (list (Reg 'rax) (Deref reg offset2))))]
+	[_ (list instr)]))
+	
 ;; patch-instructions : x86var -> x86int
 (define (patch-instructions p)
   (match p
-    [(X86Program info (list (cons label (Block info instrs))))
+    [(X86Program info (list (cons label (Block '() instrs))))
      (X86Program info
                  (list (cons label
-                             (Block info
+                             (Block '()
                                     (foldr (lambda (instr acc) (append (patch-instruction instr) acc))
                                            '()
                                            instrs)))))]))
@@ -184,11 +185,11 @@
 (define compiler-passes
   `(
      ;; Uncomment the following passes as you finish them.
-     ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
+     ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar) 
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
      ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
      ("instruction selection" ,select-instructions ,interp-x86-0)
      ("assign homes" ,assign-homes ,interp-x86-0)
      ("patch instructions" ,patch-instructions ,interp-x86-0)
-     ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+    ;;;  ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ))
