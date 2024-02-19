@@ -1,8 +1,6 @@
 #lang racket
 (require racket/set racket/stream)
-(require racket/fixnum)
-(require "interp-Lint.rkt")
-(require "interp-Lvar.rkt")
+(require racket/fixnum) (require "interp-Lint.rkt") (require "interp-Lvar.rkt")
 (require "interp-Cvar.rkt")
 (require "type-check-Lvar.rkt")
 (require "type-check-Cvar.rkt")
@@ -69,10 +67,41 @@
    (match p
      [(Program info e) (Program info ((remove-complex-opera-exp '()) e))]))
 
+
 ;; explicate-control : Lvar^mon -> Cvar
 (define (explicate-control p)
    (match p
      [(Program info e) (CProgram info (list (cons 'start (explicate_tail e))))]))
+
+(define (select-tail e)
+  (match e
+	[(Seq s t) (append (select-stmt s) (select-tail t))]
+	[(Return t) (select-stmt (Assign (Reg 'rax) t))])
+  )
+(define (select-atm e)
+  (match e
+	[(Var x) e]
+	[(Int x) (Imm x)])
+  )
+(define (select-stmt e)
+  (match exp
+	[(Assign x e)
+		(match e
+		  [(atm? e) (list (Instr 'movq (list (select-atm e) x)))]
+		  [(Prim 'read '()) (list (Callq 'read_int 1) (Instr 'movq (list (Reg 'rax) x)))]
+		  [(Prim '- (list a)) (list (Instr 'movq (list (select-atm a) x)) (Instr 'negq (list x)))]
+		  [(Prim '+ (list a b)) (cond
+								[(equal? x a) (list (Instr 'addq (select-atm b) a))]
+								[(equal? x b) (list (Instr 'addq (select-atm a) b))]
+								[(list (Instr 'movq (select-atm a) x) (Instr 'addq (select-atm b) x))]
+								)]
+		  [(Prim '- (list a b)) (cond
+								[(equal? x a) (list (Instr 'subq (select-atm b) a))]
+								[(list (Instr 'movq (select-atm a) x) (Instr 'subq (select-atm b) x))]
+		  )]
+	
+	)
+  )
 
 ;; select-instructions : Cvar -> x86var
 (define (select-instructions p)
@@ -99,7 +128,7 @@
      ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
      ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
-     ;; ("instruction selection" ,select-instructions ,interp-x86-0)
+     ("instruction selection" ,select-instructions ,interp-x86-0)
      ;; ("assign homes" ,assign-homes ,interp-x86-0)
      ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
      ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
