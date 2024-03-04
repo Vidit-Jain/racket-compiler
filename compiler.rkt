@@ -202,6 +202,56 @@
                                (Instr 'popq (list (Reg 'rbp)))
                                (Retq))))))]))
 
+(define (locations-appear args)
+  (let ([set-appear (set)])
+    (for ([arg args])
+      (match arg
+        [(Imm i) _]
+        [(Reg r) (set-add set-appear r)]
+        [(Deref reg offset) (set-add set-appear reg)]))
+    set-appear))
+
+(define (locations-read-by-instr instr)
+  (match instr
+    [(Instr 'addq (list arg1 arg2)) (locations-appear (list arg1 arg2))]
+    [(Instr 'subq (list arg1 arg2)) (locations-appear (list arg1 arg2))]
+    [(Instr 'negq (list arg)) (locations-appear (list arg))]
+    [(Instr 'movq (list arg1 arg2)) (locations-appear (list arg1))]
+    [(Instr 'pushq (list arg)) (locations-appear (list arg (Reg 'rsp)))]
+    [(Instr 'popq (list arg)) (locations-appear (list (Reg 'rsp)))]
+    [_ (set)]))
+
+;;; still dont know what to do with jmp, callq, retq
+
+(define (locations-write-by-instr instr)
+  (match instr
+    [(Instr 'addq (list arg1 arg2)) (locations-appear (list arg2))]
+    [(Instr 'subq (list arg1 arg2)) (locations-appear (list arg2))]
+    [(Instr 'negq (list arg)) (locations-appear (list arg))]
+    [(Instr 'movq (list arg1 arg2)) (locations-appear (list arg2))]
+    [(Instr 'pushq (list arg)) (locations-appear (list (Reg 'rsp)))]
+    [(Instr 'popq (list arg)) (locations-appear (list arg (Reg 'rsp)))]
+    [_ (set)]))
+
+(define (uncover-live instrs init-live-after)
+  (foldr (lambda (instr acc)
+           (cons (set-union (locations-read-by-instr instr)
+                            (set-difference (first acc) (locations-write-by-instr instr)))
+                 acc)
+           (list init-live-after)
+           instrs)))
+
+
+(define (uncover-live p)
+  (match p 
+    [(X86Program info (list (cons label-list (Block info-list instrs-list)) ...)) 
+      (X86Program info )
+      (for/list ([label label-list][info info-list][instrs instrs-list])
+        (cons label (Block (dict-set info 'live (uncover-live instrs '())) instrs))
+      )
+    ]
+  )
+)
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
@@ -215,3 +265,6 @@
     ("patch instructions" ,patch-instructions ,interp-x86-0)
     ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
     ))
+
+;;; JPAYf60d9fb1c8c652135
+
