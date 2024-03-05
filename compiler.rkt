@@ -111,7 +111,7 @@
               [(list (Instr 'movq (list (select-atm a) x)) (Instr 'addq (list (select-atm b) x)))])]
            [(Prim '- (list a b))
             (cond
-              [(equal? x a) (list (Instr 'addq (list (select-atm b) a)))]
+              [(equal? x a) (list (Instr 'subq (list (select-atm b) a)))]
               [(list (Instr 'movq (list (select-atm a) x))
                      (Instr 'subq (list (select-atm b) x)))])]))]))
 
@@ -187,6 +187,11 @@
 
 ;(error "TODO: code goes here (patch-instructions)"))
 
+(define (compute-delta a b)
+  (define c (+ a b))
+  (Imm (match (modulo c 16)
+    [0 (- c b)]
+    [_ (- (* 16 (+ (quotient c 16) 1)) b)])) )
 ;; prelude-and-conclusion : x86int -> x86int
 (define (prelude-and-conclusion p)
   (match p
@@ -196,15 +201,27 @@
       (list (cons label (Block block-info (append instrs (list (Jmp 'conclusion)))))
             (cons 'main
                   (Block '()
-                         (list (Instr 'pushq (list (Reg 'rbp)))
-                               (Instr 'movq (list (Reg 'rsp) (Reg 'rbp)))
-                               (Instr 'subq (list (Imm (dict-ref info 'stack-space)) (Reg 'rsp)))
-                               (Jmp label))))
+                         (append (list (Instr 'pushq (list (Reg 'rbp)))
+                               (Instr 'movq (list (Reg 'rsp) (Reg 'rbp))))
+                               (for/list ([reg (dict-ref info 'callee-used)])
+                                 (Instr 'pushq (list (Reg (color->register reg)))))
+
+                               (list
+                               (Instr 'subq (let ([C (length (dict-ref info 'callee-used))] [S (dict-ref info 'stack-space)])
+                                              (list (compute-delta C S) (Reg 'rsp))
+                                              ))
+                               (Jmp label)))))
             (cons 'conclusion
                   (Block '()
-                         (list (Instr 'addq (list (Imm (dict-ref info 'stack-space)) (Reg 'rsp)))
-                               (Instr 'popq (list (Reg 'rbp)))
-                               (Retq))))))]))
+                         (cons
+                               (Instr 'addq (let ([C (length (dict-ref info 'callee-used))] [S (dict-ref info 'stack-space)])
+                                              (list (compute-delta C S) (Reg 'rsp))
+                                              ))
+                               (append
+                               (for/list ([reg (reverse (dict-ref info 'callee-used))])
+                                 (Instr 'popq (list (Reg (color->register reg)))))
+                               (list (Instr 'popq (list (Reg 'rbp)))
+                               (Retq))))))))]))
 ; (define (locations-appear args)
 ;   (apply set
 ;          (filter (lambda (arg)
@@ -311,13 +328,16 @@
       (dict-set info 'conflicts (build-graph block-info-list instrs-list)) 
       (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
         (cons label (Block block-info instrs))))]))
+(define (calc-offset num)
+  (- (* (- num 6) 8))
+  )
 (define (allocate-reg reg color)
   (match reg 
     [(Imm a) reg]
     [(Reg a) reg]
     [(Var a) (let ([num (dict-ref color a)])
                (if (>= num 11)
-                 (Deref 'rbp (- (* (- num 6) 8)))
+                 (Deref 'rbp (calc-offset num))
                  (Reg (color->register (dict-ref color a)))))]
     )
   )
@@ -336,7 +356,7 @@
      (define-values (color callee-used)
        (graph-coloring (dict-ref info 'conflicts)(dict-ref info 'locals-types)))
      (X86Program
-      (dict-set (dict-set info 'callee-used callee-used) 'stack-space (* (max 0 (- (max-color color) 10)) 8))
+      (dict-set (dict-set info 'callee-used (set->list callee-used)) 'stack-space (* (max 0 (- (max-color color) 10)) 8))
       (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
         (cons label (Block block-info (allocate-block instrs color)))))]))
 
@@ -389,6 +409,6 @@
     ("build interference" ,build-interference ,interp-x86-0)
     ("allocate registers", allocate-registers ,interp-x86-0)
     ; ("assign homes" ,assign-homes ,interp-x86-0)
-    ; ("patch instructions" ,patch-instructions ,interp-x86-0)
-    ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)))
-    ))
+    ("patch instructions" ,patch-instructions ,interp-x86-0)
+    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)))
+    
