@@ -311,15 +311,34 @@
       (dict-set info 'conflicts (build-graph block-info-list instrs-list)) 
       (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
         (cons label (Block block-info instrs))))]))
-
+(define (allocate-reg reg color)
+  (match reg 
+    [(Imm a) reg]
+    [(Reg a) reg]
+    [(Var a) (let ([num (dict-ref color a)])
+               (if (>= num 11)
+                 (Deref 'rbp (- (* (- num 6) 8)))
+                 (Reg (color->register (dict-ref color a)))))]
+    )
+  )
+(define (allocate-instr instr color)
+  (match instr
+    [(Instr name arg*) (Instr name (for/list ([a arg*]) (allocate-reg a color)))]
+    [_ instr]
+    ))
+(define (allocate-block instrs color)
+  (for/list ([instr instrs])
+    (allocate-instr instr color)
+    ))
 (define (allocate-registers p)
   (match p
-    [(X86Program info blocks)
+    [(X86Program info (list (cons label-list (Block block-info-list instrs-list)) ...))
      (define-values (color callee-used)
        (graph-coloring (dict-ref info 'conflicts)(dict-ref info 'locals-types)))
      (X86Program
       (dict-set (dict-set info 'callee-used callee-used) 'stack-space (* (max 0 (- (max-color color) 10)) 8))
-      blocks)]))
+      (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
+        (cons label (Block block-info (allocate-block instrs color)))))]))
 
 (define (max-color ls) 
   (foldl (lambda (a b)
