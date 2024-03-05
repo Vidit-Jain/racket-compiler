@@ -11,6 +11,7 @@
 (require "utilities.rkt")
 (require "interp.rkt")
 (require "multigraph.rkt")
+(require "priority_queue.rkt")
 (provide (all-defined-out))
 
 (define (uniquify-exp env) ;; TODO: this function currently does nothing. Your code goes here
@@ -162,6 +163,7 @@
 
 (define (patch-instruction instr)
   (match instr
+	[(Instr 'movq (list a a)) (list)]
     [(Instr name (list (Imm (? big-int? i)) (Deref reg offset)))
      (list (Instr 'movq (list (Imm i) (Reg 'rax))) (Instr name (list (Reg 'rax) (Deref reg offset))))]
     [(Instr name (list (Deref reg offset) (Imm (? big-int? i))))
@@ -280,6 +282,17 @@
                                (build-interference-block instrs (dict-ref block-info 'live-after)))
                      instrs))))]))
 
+(define (allocate-registers p)
+  (match p
+    [(X86Program info (list (cons label-list (Block block-info-llist instrs-list)) ...))
+     (X86Program
+      info
+      (for/list ([label label-list] [block-info block-info-llist] [instrs instrs-list])
+        (cons label
+              (Block (dict-set block-info
+                               'conflicts
+                               (build-interference-block instrs (dict-ref block-info 'live-after)))
+                     instrs))))]))
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
