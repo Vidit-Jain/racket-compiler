@@ -10,6 +10,7 @@
 (require "type-check-Cvar.rkt")
 (require "utilities.rkt")
 (require "interp.rkt")
+(require "multigraph.rkt")
 (provide (all-defined-out))
 
 (define (uniquify-exp env) ;; TODO: this function currently does nothing. Your code goes here
@@ -231,6 +232,7 @@
     [(Instr 'movq (list arg1 arg2)) (locations-appear (list arg2))]
     [(Instr 'pushq (list arg)) (locations-appear (list (Reg 'rsp)))]
     [(Instr 'popq (list arg)) (locations-appear (list arg (Reg 'rsp)))]
+    [(Callq name num) (locations-appear (list (Reg 'rax)))]
     [_ (set)]))
 
 (define (uncover-live-instrs instrs init-live-after)
@@ -253,22 +255,18 @@
 
 (define (temp lst1 lst2)
   (cond [(or (empty? lst1) (empty? lst2)) '()]
-        [else (for*/list ([x lst1] [y lst2])
-               (list x y))]))
-
-
+        [else (filter (lambda (x) (not (equal? (first x) (last x)))) (for*/list ([x (set->list lst1)] [y (set->list lst2)])
+               (list x y)))]))
 
 (define (build-interference-block instrs live-after-list)
   (undirected-graph
    (foldr (lambda (instr live-after prev)
-            (append (temp (set->list live-after) (set->list (locations-write-by-instr instr))) prev)
-            ;;; (cons (list (set->list live-after) (set->list (locations-write-by-instr instr))) prev)
+            (match instr
+              [(Instr 'movq (list arg1 arg2)) (append (temp (set arg2) (set-subtract live-after (set arg1))) prev)]
+              [_ (append (temp (locations-write-by-instr instr) live-after) prev)])
           )
           '()
           instrs live-after-list)))
-    ;;; (for/list ([instr instrs][live-after live-after-list])
-    ;;;   (temp (set->list live-after) (set->list (locations-write-by-instr instr))))
-    );;;)
 
 (define (build-interference p)
   (match p
@@ -278,7 +276,7 @@
       (for/list ([label label-list] [block-info block-info-llist] [instrs instrs-list])
         (cons label
               (Block (dict-set block-info
-                               'interference
+                               'conflicts
                                (build-interference-block instrs (dict-ref block-info 'live-after)))
                      instrs))))]))
 
