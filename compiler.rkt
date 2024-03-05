@@ -315,14 +315,21 @@
 (define (allocate-registers p)
   (match p
     [(X86Program info blocks)
+     (define-values (color callee-used)
+       (graph-coloring (dict-ref info 'conflicts)(dict-ref info 'locals-types)))
      (X86Program
-      (dict-set info 'colors (graph-coloring (dict-ref info 'conflicts)(dict-ref info 'locals-types))
-              ) blocks)]))
+      (dict-set (dict-set info 'callee-used callee-used) 'stack-space (* (max 0 (- (max-color color) 10)) 8))
+      blocks)]))
+
+(define (max-color ls) 
+  (foldl (lambda (a b)
+           (max (cdr a) b)) 0 ls))
 
 (define (graph-coloring graph var-list)
   (define color (make-hash))  
   (define pq-handle (make-hash))
   (define used (make-hash))
+  (define callee-used (mutable-set))
   (define pq (make-pqueue (lambda (a b) (>= (set-count (hash-ref used a)) (set-count (hash-ref used b))))))
   (define (find-color st c)
     (if (set-member? st c)
@@ -339,16 +346,17 @@
   (while (> (pqueue-count pq) 0)
     (let ([c (pqueue-pop! pq)])
       (hash-set! color c (find-color (hash-ref used c) 0))
+
+      (let ([num (hash-ref color c)])
+        (cond [(and (<= num 10) (>= num 7)) (set-add! callee-used num)]))
+
       (for ([u (get-neighbors graph c)])
         (cond [(not (set-member? registers u))
                (hash-set! used u (set-add (hash-ref used u) (hash-ref color c)))
                (pqueue-decrease-key! pq (hash-ref pq-handle u))
                ]))))
-  (hash->list color)
+  (values (hash->list color) callee-used)
   )
-(define (max-color ls) 
-  (foldl (lambda (a b)
-           (max a b) 0 ls)))
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
