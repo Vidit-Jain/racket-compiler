@@ -163,7 +163,7 @@
 
 (define (patch-instruction instr)
   (match instr
-	[(Instr 'movq (list a a)) (list)]
+  [(Instr 'movq (list a a)) (list)]
     [(Instr name (list (Imm (? big-int? i)) (Deref reg offset)))
      (list (Instr 'movq (list (Imm i) (Reg 'rax))) (Instr name (list (Reg 'rax) (Deref reg offset))))]
     [(Instr name (list (Deref reg offset) (Imm (? big-int? i))))
@@ -205,13 +205,34 @@
                          (list (Instr 'addq (list (Imm (dict-ref info 'stack-space)) (Reg 'rsp)))
                                (Instr 'popq (list (Reg 'rbp)))
                                (Retq))))))]))
+; (define (locations-appear args)
+;   (apply set
+;          (filter (lambda (arg)
+;                    (match arg
+;                      [(Imm i) #f]
+;                      [_ #t]))
+;                  args)))
+
+;(define (locations-appear args)
+;  (apply set
+;         (map (lambda (arg)
+;                   (match arg
+;                     [(Reg a) a]
+;                     [(Var a) a]))
+;                   (filter (lambda (arg)
+;                   (match arg
+;                     [(Imm i) #f]
+;                     [_ #t]))
+;                 args))))
 (define (locations-appear args)
-  (apply set
-         (filter (lambda (arg)
-                   (match arg
-                     [(Imm i) #f]
-                     [_ #t]))
-                 args)))
+        (if (empty? args)
+          (set) 
+          (match (first args)
+            [(Reg a) (set-add (locations-appear (rest args)) a)]
+            [(Var a) (set-add (locations-appear (rest args)) a)]
+            [(Imm a) (locations-appear (rest args))]
+            )
+        ))
 
 
 (define (locations-read-by-instr instr)
@@ -260,11 +281,18 @@
         [else (filter (lambda (x) (not (equal? (first x) (last x)))) (for*/list ([x (set->list lst1)] [y (set->list lst2)])
                (list x y)))]))
 
+(define (decompose a)
+  (match a
+    [(Reg b) b]
+    [(Var b) b]
+    [_ a]
+    )
+  )
 (define (build-interference-block instrs live-after-list)
   (undirected-graph
    (foldr (lambda (instr live-after prev)
             (match instr
-              [(Instr 'movq (list arg1 arg2)) (append (temp (set arg2) (set-subtract live-after (set arg1))) prev)]
+              [(Instr 'movq (list arg1 arg2)) (append (temp (set (decompose arg2)) (set-subtract live-after (set (decompose arg1)))) prev)]
               [_ (append (temp (locations-write-by-instr instr) live-after) prev)])
           )
           '()
@@ -290,9 +318,34 @@
       (for/list ([label label-list] [block-info block-info-llist] [instrs instrs-list])
         (cons label
               (Block (dict-set block-info
-                               'conflicts
-                               (build-interference-block instrs (dict-ref block-info 'live-after)))
-                     instrs))))]))
+                               'colors
+                               (graph-coloring (dict-ref block-info 'conflicts) (dict-ref info 'locals-types))) instrs))))]))
+(define (graph-coloring graph var-list)
+  (define color (make-hash))  
+  (define pq-handle (make-hash))
+  (define used (make-hash))
+  (define pq (make-pqueue (lambda (a b) (>= (set-count (hash-ref used a)) (set-count (hash-ref used b))))))
+  (define (find-color st c)
+    (if (set-member? st c)
+    (find-color st (+ c 1))
+    c))
+  (for ([v var-list])
+    (let ([var (car v)])
+      (add-vertex! graph var)
+      (hash-set! used var (set))
+      (for ([n (get-neighbors graph var)])
+        (cond [(set-member? registers n) (hash-set! used var (set-add (hash-ref used var) (register->color n)))]))
+      (hash-set! pq-handle var (pqueue-push! pq var))))
+  (while (> (pqueue-count pq) 0)
+    (let ([c (pqueue-pop! pq)])
+      (hash-set! color c (find-color (hash-ref used c) 0))
+      (for ([u (get-neighbors graph c)])
+        (cond [(not (set-member? registers u))
+               (hash-set! used u (set-add (hash-ref used u) (hash-ref color c)))
+               (pqueue-decrease-key! pq (hash-ref pq-handle u))
+               ]))))
+  (hash->list color)
+  )
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
@@ -304,7 +357,8 @@
     ("instruction selection" ,select-instructions ,interp-x86-0)
     ("uncover live" ,uncover-live ,interp-x86-0)
     ("build interference" ,build-interference ,interp-x86-0)
-    ("assign homes" ,assign-homes ,interp-x86-0)
-    ("patch instructions" ,patch-instructions ,interp-x86-0)
-    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)))
-
+    ("allocate registers", allocate-registers ,interp-x86-0)
+    ; ("assign homes" ,assign-homes ,interp-x86-0)
+    ; ("patch instructions" ,patch-instructions ,interp-x86-0)
+    ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)))
+    ))
