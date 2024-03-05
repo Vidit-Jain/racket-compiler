@@ -289,37 +289,36 @@
     )
   )
 (define (build-interference-block instrs live-after-list)
-  (undirected-graph
    (foldr (lambda (instr live-after prev)
             (match instr
               [(Instr 'movq (list arg1 arg2)) (append (temp (set (decompose arg2)) (set-subtract live-after (set (decompose arg1)))) prev)]
               [_ (append (temp (locations-write-by-instr instr) live-after) prev)])
           )
           '()
-          instrs live-after-list)))
+          instrs live-after-list))
+
+(define (build-graph block-info-list instrs-list)
+  (define graph (undirected-graph '()))
+  (for/list ([block-info block-info-list] [instrs instrs-list])
+    (for ([edge (build-interference-block instrs (dict-ref block-info 'live-after))]) 
+      (add-edge! graph (first edge) (last edge))))
+  graph )
 
 (define (build-interference p)
   (match p
-    [(X86Program info (list (cons label-list (Block block-info-llist instrs-list)) ...))
+    [(X86Program info (list (cons label-list (Block block-info-list instrs-list)) ...))
      (X86Program
-      info
-      (for/list ([label label-list] [block-info block-info-llist] [instrs instrs-list])
-        (cons label
-              (Block (dict-set block-info
-                               'conflicts
-                               (build-interference-block instrs (dict-ref block-info 'live-after)))
-                     instrs))))]))
+      (dict-set info 'conflicts (build-graph block-info-list instrs-list)) 
+      (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
+        (cons label (Block block-info instrs))))]))
 
 (define (allocate-registers p)
   (match p
-    [(X86Program info (list (cons label-list (Block block-info-llist instrs-list)) ...))
+    [(X86Program info blocks)
      (X86Program
-      info
-      (for/list ([label label-list] [block-info block-info-llist] [instrs instrs-list])
-        (cons label
-              (Block (dict-set block-info
-                               'colors
-                               (graph-coloring (dict-ref block-info 'conflicts) (dict-ref info 'locals-types))) instrs))))]))
+      (dict-set info 'colors (graph-coloring (dict-ref info 'conflicts)(dict-ref info 'locals-types))
+              ) blocks)]))
+
 (define (graph-coloring graph var-list)
   (define color (make-hash))  
   (define pq-handle (make-hash))
@@ -336,6 +335,7 @@
       (for ([n (get-neighbors graph var)])
         (cond [(set-member? registers n) (hash-set! used var (set-add (hash-ref used var) (register->color n)))]))
       (hash-set! pq-handle var (pqueue-push! pq var))))
+
   (while (> (pqueue-count pq) 0)
     (let ([c (pqueue-pop! pq)])
       (hash-set! color c (find-color (hash-ref used c) 0))
@@ -346,6 +346,9 @@
                ]))))
   (hash->list color)
   )
+(define (max-color ls) 
+  (foldl (lambda (a b)
+           (max a b) 0 ls)))
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
