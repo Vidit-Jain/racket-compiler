@@ -1,6 +1,7 @@
 #lang racket
 (require racket/set
-         racket/stream)
+         racket/stream
+         graph)
 (require racket/fixnum)
 (require "interp-Lint.rkt")
 (require "interp-Lvar.rkt")
@@ -144,12 +145,12 @@
 ;; assign-homes : x86var -> x86var
 (define (assign-homes p)
   (match p
-    [(X86Program info (list (cons label (Block '() instrs))))
+    [(X86Program info (list (cons label (Block block-info instrs))))
      (let ([var-list (dict-ref info 'locals-types)])
        (let-values ([(var-map total-space) (assign-var-offset var-list)])
          (X86Program (dict-set info 'stack-space total-space)
                      (list (cons label
-                                 (Block '()
+                                 (Block block-info
                                         (for/list ([instr instrs])
                                           ((assign-homes-instr var-map) instr))))))))]))
 
@@ -173,10 +174,10 @@
 ;; patch-instructions : x86var -> x86int
 (define (patch-instructions p)
   (match p
-    [(X86Program info (list (cons label (Block '() instrs))))
+    [(X86Program info (list (cons label (Block block-info instrs))))
      (X86Program info
                  (list (cons label
-                             (Block '()
+                             (Block block-info
                                     (foldr (lambda (instr acc) (append (patch-instruction instr) acc))
                                            '()
                                            instrs)))))]))
@@ -186,10 +187,10 @@
 ;; prelude-and-conclusion : x86int -> x86int
 (define (prelude-and-conclusion p)
   (match p
-    [(X86Program info (list (cons label (Block '() instrs))))
+    [(X86Program info (list (cons label (Block block-info instrs))))
      (X86Program
       info
-      (list (cons label (Block '() (append instrs (list (Jmp 'conclusion)))))
+      (list (cons label (Block block-info (append instrs (list (Jmp 'conclusion)))))
             (cons 'main
                   (Block '()
                          (list (Instr 'pushq (list (Reg 'rbp)))
@@ -201,15 +202,14 @@
                          (list (Instr 'addq (list (Imm (dict-ref info 'stack-space)) (Reg 'rsp)))
                                (Instr 'popq (list (Reg 'rbp)))
                                (Retq))))))]))
-
 (define (locations-appear args)
-  (let ([set-appear (set)])
-    (for ([arg args])
-      (match arg
-        [(Imm i) _]
-        [(Reg r) (set-add set-appear r)]
-        [(Deref reg offset) (set-add set-appear reg)]))
-    set-appear))
+  (apply set
+         (filter (lambda (arg)
+                   (match arg
+                     [(Imm i) #f]
+                     [_ #t]))
+                 args)))
+
 
 (define (locations-read-by-instr instr)
   (match instr
@@ -233,25 +233,55 @@
     [(Instr 'popq (list arg)) (locations-appear (list arg (Reg 'rsp)))]
     [_ (set)]))
 
-(define (uncover-live instrs init-live-after)
+(define (uncover-live-instrs instrs init-live-after)
   (foldr (lambda (instr acc)
-           (cons (set-union (locations-read-by-instr instr)
-                            (set-difference (first acc) (locations-write-by-instr instr)))
-                 acc)
-           (list init-live-after)
-           instrs)))
-
+           (cons (set-union (set-subtract (first acc) (locations-write-by-instr instr))
+                            (locations-read-by-instr instr))
+                 acc))
+         (list init-live-after)
+         instrs))
 
 (define (uncover-live p)
-  (match p 
-    [(X86Program info (list (cons label-list (Block info-list instrs-list)) ...)) 
-      (X86Program info )
-      (for/list ([label label-list][info info-list][instrs instrs-list])
-        (cons label (Block (dict-set info 'live (uncover-live instrs '())) instrs))
-      )
-    ]
-  )
-)
+  (match p
+    [(X86Program info (list (cons label-list (Block info-list instrs-list)) ...))
+     (X86Program
+      info
+      (for/list ([label label-list] [block-info info-list] [instrs instrs-list])
+        (cons label
+              (Block (dict-set block-info 'live-after (rest (uncover-live-instrs instrs (set))))
+                     instrs))))]))
+
+(define (temp lst1 lst2)
+  (cond [(or (empty? lst1) (empty? lst2)) '()]
+        [else (for*/list ([x lst1] [y lst2])
+               (list x y))]))
+
+
+
+(define (build-interference-block instrs live-after-list)
+  (undirected-graph
+   (foldr (lambda (instr live-after prev)
+            (append (temp (set->list live-after) (set->list (locations-write-by-instr instr))) prev)
+            ;;; (cons (list (set->list live-after) (set->list (locations-write-by-instr instr))) prev)
+          )
+          '()
+          instrs live-after-list)))
+    ;;; (for/list ([instr instrs][live-after live-after-list])
+    ;;;   (temp (set->list live-after) (set->list (locations-write-by-instr instr))))
+    );;;)
+
+(define (build-interference p)
+  (match p
+    [(X86Program info (list (cons label-list (Block block-info-llist instrs-list)) ...))
+     (X86Program
+      info
+      (for/list ([label label-list] [block-info block-info-llist] [instrs instrs-list])
+        (cons label
+              (Block (dict-set block-info
+                               'interference
+                               (build-interference-block instrs (dict-ref block-info 'live-after)))
+                     instrs))))]))
+
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
@@ -261,10 +291,9 @@
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
     ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
     ("instruction selection" ,select-instructions ,interp-x86-0)
+    ("uncover live" ,uncover-live ,interp-x86-0)
+    ("build interference" ,build-interference ,interp-x86-0)
     ("assign homes" ,assign-homes ,interp-x86-0)
     ("patch instructions" ,patch-instructions ,interp-x86-0)
-    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
-    ))
-
-;;; JPAYf60d9fb1c8c652135
+    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)))
 
