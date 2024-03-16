@@ -20,14 +20,16 @@
   (lambda (e)
     (match e
       [(Var x) (Var (dict-ref env x))]
-      [(Int n) (Int n)]
+	  [(If a b c) (If ((uniquify-exp env) a) ((uniquify-exp env) b) ((uniquify-exp env) c))]
       [(Let x e body)
        (let ([sub-env (dict-set env x (gensym x))])
          (Let (dict-ref sub-env x) ((uniquify-exp env) e) ((uniquify-exp sub-env) body)))]
       [(Prim op es)
        (Prim op
              (for/list ([e es])
-               ((uniquify-exp env) e)))])))
+               ((uniquify-exp env) e)))]
+	  [_ e]
+	  )))
 
 ; uniquify : Lvar -> Lvar
 (define (uniquify p)
@@ -402,7 +404,7 @@
   ;; Uncomment the following passes as you finish them.
   `(
 	("shrink", shrink, interp-Lif, type-check-Lif)
-	; ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
+	("uniquify" ,uniquify ,interp-Lif,type-check-Lif)
     ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
     ; ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
     ; ("instruction selection" ,select-instructions ,interp-x86-0)
