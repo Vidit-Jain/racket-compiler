@@ -5,16 +5,18 @@
 (require racket/fixnum)
 (require "interp-Lint.rkt")
 (require "interp-Lvar.rkt")
+(require "interp-Lif.rkt")
 (require "interp-Cvar.rkt")
 (require "type-check-Lvar.rkt")
 (require "type-check-Cvar.rkt")
+(require "type-check-Lif.rkt")
 (require "utilities.rkt")
 (require "interp.rkt")
 (require "multigraph.rkt")
 (require "priority_queue.rkt")
 (provide (all-defined-out))
 
-(define (uniquify-exp env) ;; TODO: this function currently does nothing. Your code goes here
+(define (uniquify-exp env) 
   (lambda (e)
     (match e
       [(Var x) (Var (dict-ref env x))]
@@ -31,6 +33,23 @@
 (define (uniquify p)
   (match p
     [(Program info e) (Program info ((uniquify-exp '()) e))]))
+
+(define (shrink-exp e)
+    (match e
+	  [(Prim 'and (list a b)) (If (shrink-exp a) (shrink-exp b) (Bool #f))]
+	  [(Prim 'or (list a b)) (If (shrink-exp a) (shrink-exp b) (Bool #f))]
+      [(If a b c) (If (shrink-exp a) (shrink-exp b) (shrink-exp c))]
+      [(Let x e body) (Let x (shrink-exp e) (shrink-exp body))]
+      [(Prim op es)
+       (Prim op
+             (for/list ([e es])
+               (shrink-exp e)))]
+	  [_ e]
+	  ))
+
+(define (shrink p)
+  (match p
+    [(Program info e) (Program info (shrink-exp e))]))
 
 (define (remove-complex-opera-exp
          env) ;; TODO: this function currently does nothing. Your code goes here
@@ -170,7 +189,6 @@
      (list (Instr 'movq (list (Imm i) (Reg 'rax))) (Instr name (list (Deref reg offset) (Reg 'rax))))]
     [(Instr name (list (Deref reg offset1) (Deref reg offset2)))
      (list (Instr 'movq (list (Deref reg offset1) (Reg 'rax)))
-           ;;;    (Instr name (list (Deref reg offset1) (Reg 'rax)))
            (Instr name (list (Reg 'rax) (Deref reg offset2))))]
     [_ (list instr)]))
 
@@ -222,25 +240,6 @@
                                  (Instr 'popq (list (Reg (color->register reg)))))
                                (list (Instr 'popq (list (Reg 'rbp)))
                                (Retq))))))))]))
-; (define (locations-appear args)
-;   (apply set
-;          (filter (lambda (arg)
-;                    (match arg
-;                      [(Imm i) #f]
-;                      [_ #t]))
-;                  args)))
-
-;(define (locations-appear args)
-;  (apply set
-;         (map (lambda (arg)
-;                   (match arg
-;                     [(Reg a) a]
-;                     [(Var a) a]))
-;                   (filter (lambda (arg)
-;                   (match arg
-;                     [(Imm i) #f]
-;                     [_ #t]))
-;                 args))))
 (define (locations-appear args)
         (if (empty? args)
           (set) 
@@ -401,14 +400,18 @@
 ;; must be named "compiler.rkt"
 (define compiler-passes
   ;; Uncomment the following passes as you finish them.
-  `(("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
-    ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
-    ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
-    ("instruction selection" ,select-instructions ,interp-x86-0)
-    ("uncover live" ,uncover-live ,interp-x86-0)
-    ("build interference" ,build-interference ,interp-x86-0)
-    ("allocate registers", allocate-registers ,interp-x86-0)
+  `(
+	("shrink", shrink, interp-Lif, type-check-Lif)
+	; ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
+    ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
+    ; ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
+    ; ("instruction selection" ,select-instructions ,interp-x86-0)
+    ; ("uncover live" ,uncover-live ,interp-x86-0)
+    ; ("build interference" ,build-interference ,interp-x86-0)
+    ; ("allocate registers", allocate-registers ,interp-x86-0)
     ; ("assign homes" ,assign-homes ,interp-x86-0)
-    ("patch instructions" ,patch-instructions ,interp-x86-0)
-    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)))
+    ; ("patch instructions" ,patch-instructions ,interp-x86-0)
+    ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+	)
+  )
     
