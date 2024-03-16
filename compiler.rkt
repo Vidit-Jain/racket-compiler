@@ -57,8 +57,7 @@
          env) ;; TODO: this function currently does nothing. Your code goes here
   (lambda (e)
     (match e
-      [(Var x) (Var x)]
-      [(Int n) (Int n)]
+	  [(If a b c) (If ((remove-complex-opera-exp env) a)) ((remove-complex-opera-exp env) b) ((remove-complex-opera-exp env) c)]
       [(Let x e body)
        (Let x ((remove-complex-opera-exp env) e) ((remove-complex-opera-exp env) body))]
       [(Prim op es)
@@ -81,7 +80,9 @@
                     ((remove-complex-opera-exp env) (last es))
                     ((remove-complex-opera-exp env) (Prim op (list (car es) (Var x))))))]
             [else (Prim op es)])]
-         [else (Prim op es)])])))
+         [else (Prim op es)])]
+	  [_ e]
+	  )))
 
 (define (explicate_tail e)
   (match e
@@ -405,7 +406,7 @@
   `(
 	("shrink", shrink, interp-Lif, type-check-Lif)
 	("uniquify" ,uniquify ,interp-Lif,type-check-Lif)
-    ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
+    ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
     ; ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
     ; ("instruction selection" ,select-instructions ,interp-x86-0)
     ; ("uncover live" ,uncover-live ,interp-x86-0)
