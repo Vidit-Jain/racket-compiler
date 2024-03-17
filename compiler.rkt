@@ -7,9 +7,11 @@
 (require "interp-Lvar.rkt")
 (require "interp-Lif.rkt")
 (require "interp-Cvar.rkt")
+(require "interp-Cif.rkt")
 (require "type-check-Lvar.rkt")
 (require "type-check-Cvar.rkt")
 (require "type-check-Lif.rkt")
+(require "type-check-Cif.rkt")
 (require "utilities.rkt")
 (require "interp.rkt")
 (require "multigraph.rkt")
@@ -20,7 +22,7 @@
   (lambda (e)
     (match e
       [(Var x) (Var (dict-ref env x))]
-	  [(If a b c) (If ((uniquify-exp env) a) ((uniquify-exp env) b) ((uniquify-exp env) c))]
+    [(If a b c) (If ((uniquify-exp env) a) ((uniquify-exp env) b) ((uniquify-exp env) c))]
       [(Let x e body)
        (let ([sub-env (dict-set env x (gensym x))])
          (Let (dict-ref sub-env x) ((uniquify-exp env) e) ((uniquify-exp sub-env) body)))]
@@ -28,8 +30,8 @@
        (Prim op
              (for/list ([e es])
                ((uniquify-exp env) e)))]
-	  [_ e]
-	  )))
+    [_ e]
+    )))
 
 ; uniquify : Lvar -> Lvar
 (define (uniquify p)
@@ -38,16 +40,16 @@
 
 (define (shrink-exp e)
     (match e
-	  [(Prim 'and (list a b)) (If (shrink-exp a) (shrink-exp b) (Bool #f))]
-	  [(Prim 'or (list a b)) (If (shrink-exp a) (shrink-exp b) (Bool #f))]
+    [(Prim 'and (list a b)) (If (shrink-exp a) (shrink-exp b) (Bool #f))]
+    [(Prim 'or (list a b)) (If (shrink-exp a) (shrink-exp b) (Bool #f))]
       [(If a b c) (If (shrink-exp a) (shrink-exp b) (shrink-exp c))]
       [(Let x e body) (Let x (shrink-exp e) (shrink-exp body))]
       [(Prim op es)
        (Prim op
              (for/list ([e es])
                (shrink-exp e)))]
-	  [_ e]
-	  ))
+    [_ e]
+    ))
 
 (define (shrink p)
   (match p
@@ -57,7 +59,7 @@
          env) ;; TODO: this function currently does nothing. Your code goes here
   (lambda (e)
     (match e
-	  [(If a b c) (If ((remove-complex-opera-exp env) a)) ((remove-complex-opera-exp env) b) ((remove-complex-opera-exp env) c)]
+    [(If a b c) (If ((remove-complex-opera-exp env) a) ((remove-complex-opera-exp env) b) ((remove-complex-opera-exp env) c))]
       [(Let x e body)
        (Let x ((remove-complex-opera-exp env) e) ((remove-complex-opera-exp env) body))]
       [(Prim op es)
@@ -81,25 +83,48 @@
                     ((remove-complex-opera-exp env) (Prim op (list (car es) (Var x))))))]
             [else (Prim op es)])]
          [else (Prim op es)])]
-	  [_ e]
-	  )))
+    [_ e]
+    )))
 
 (define (explicate_tail e)
   (match e
     [(Var x) (Return (Var x))]
     [(Int n) (Return (Int n))]
+    [(Bool n) (Return (Bool n))]
     [(Let x rhs body) (explicate_assign rhs x (explicate_tail body))]
     [(Prim op es) (Return (Prim op es))]
+    [(If a b c) (explicate_pred a (explicate_tail b) (explicate_tail c))]
     [else (error "explicate_tail unhandled case" e)]))
 
 (define (explicate_assign e x cont)
   (match e
     [(Var y) (Seq (Assign (Var x) (Var y)) cont)]
     [(Int n) (Seq (Assign (Var x) (Int n)) cont)]
+    [(Bool n) (Seq (Assign (Var x) (Bool n)) cont)]
     [(Let y rhs body) (explicate_assign rhs y (explicate_assign body x cont))]
     [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
+    [(If a b c) (explicate_pred a (explicate_assign b x cont) (explicate_assign c x cont))]
     [else (error "explicate_assign unhandled case" e)]))
 
+(define (explicate_pred cnd thn els)
+  (match cnd
+  [(Var x) (IfStmt (Prim 'eq? (list (Var x) (Bool #t))) (create_block thn) (create_block els))]
+  [(Let x rhs body) (explicate_assign rhs x (explicate_pred body thn els))]
+  [(Prim 'not (list e)) (IfStmt (Prim 'eq? (list e (Bool #t))) (create_block els) (create_block thn))]
+  [(Prim op es) #:when (or (eq? op 'eq?) (eq? op '<) (eq? op '>))
+    (IfStmt (Prim op es) (create_block thn) (create_block els))]
+  [(Bool b) (if b thn els)]
+  [(If cnd^ thn^ els^) (explicate_pred cnd^ (explicate_pred thn^ thn els) (explicate_pred els^ thn els))]))
+
+(define basic-blocks '())
+
+(define (create_block tail)
+  (match tail
+    [(Goto label) (Goto label)]
+    [else
+      (let ([label (gensym 'block)])
+        (set! basic-blocks (cons (cons label tail) basic-blocks))
+        (Goto label))]))
 ;; remove-complex-opera* : Lvar -> Lvar^mon
 (define (remove-complex-opera* p)
   (match p
@@ -108,7 +133,7 @@
 ;; explicate-control : Lvar^mon -> Cvar
 (define (explicate-control p)
   (match p
-    [(Program info e) (CProgram info (list (cons 'start (explicate_tail e))))]))
+    [(Program info e) (CProgram info (cons (cons 'start (explicate_tail e)) basic-blocks))]))
 
 (define (select-tail e)
   (match e
@@ -404,10 +429,10 @@
 (define compiler-passes
   ;; Uncomment the following passes as you finish them.
   `(
-	("shrink", shrink, interp-Lif, type-check-Lif)
-	("uniquify" ,uniquify ,interp-Lif,type-check-Lif)
-    ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
-    ; ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
+  ("shrink", shrink, interp-Lif, type-check-Lif)
+  ("uniquify" ,uniquify ,interp-Lif,type-check-Lif)
+    ("remove complex opera*" ,remove-complex-opera* ,interp-Lif,type-check-Lif)
+    ("explicate control" ,explicate-control ,interp-Cif,type-check-Cif)
     ; ("instruction selection" ,select-instructions ,interp-x86-0)
     ; ("uncover live" ,uncover-live ,interp-x86-0)
     ; ("build interference" ,build-interference ,interp-x86-0)
@@ -415,6 +440,6 @@
     ; ("assign homes" ,assign-homes ,interp-x86-0)
     ; ("patch instructions" ,patch-instructions ,interp-x86-0)
     ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
-	)
+  )
   )
     
