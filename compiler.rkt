@@ -138,11 +138,25 @@
 (define (select-tail e)
   (match e
     [(Seq s t) (append (select-stmt s) (select-tail t))]
-    [(Return t) (select-stmt (Assign (Reg 'rax) t))]))
+    [(Return t) (select-stmt (Assign (Reg 'rax) t))]
+    [(Goto l) (list (Jmp l))]
+    [(IfStmt (Prim cmp (list (? atm? a) (? atm? b))) (Goto thn) (Goto els)) #:when (= (cmp) 'eq) 
+      (list (Instr 'cmqp (list (select-atm b) (select-atm a))) (Instr 'je (list thn)) (Instr 'jmp els))]
+    [(IfStmt (Prim cmp (list (? atm? a) (? atm? b))) (Goto thn) (Goto els)) #:when (= (cmp) '<) 
+      (list (Instr 'cmqp (list (select-atm b) (select-atm a))) (Instr 'jl (list thn)) (Instr 'jmp els))]
+    [(IfStmt (Prim cmp (list (? atm? a) (? atm? b))) (Goto thn) (Goto els)) #:when (= (cmp) '>) 
+      (list (Instr 'cmqp (list (select-atm b) (select-atm a))) (Instr 'jg (list thn)) (Instr 'jmp els))]
+    [(IfStmt (Prim cmp (list (? atm? a) (? atm? b))) (Goto thn) (Goto els)) #:when (= (cmp) '<=) 
+      (list (Instr 'cmqp (list (select-atm b) (select-atm a))) (Instr 'jle (list thn)) (Instr 'jmp els))]
+    [(IfStmt (Prim cmp (list (? atm? a) (? atm? b))) (Goto thn) (Goto els)) #:when (= (cmp) '>=) 
+      (list (Instr 'cmqp (list (select-atm b) (select-atm a))) (Instr 'jge (list thn)) (Instr 'jmp els))]
+    ))
 (define (select-atm e)
   (match e
     [(Var x) e]
-    [(Int x) (Imm x)]))
+    [(Int x) (Imm x)]
+    [(Bool x) (Imm (if x 1 0))]))
+
 (define (select-stmt e)
   (match e
     [(Assign x e)
@@ -160,7 +174,15 @@
             (cond
               [(equal? x a) (list (Instr 'subq (list (select-atm b) a)))]
               [(list (Instr 'movq (list (select-atm a) x))
-                     (Instr 'subq (list (select-atm b) x)))])]))]))
+                     (Instr 'subq (list (select-atm b) x)))])]
+            [(Prim 'not (list (== x))) (list (Instr 'xorq (list (Imm 1) x)))]
+            [(Prim 'not (list (? atm? a))) (list (Instr 'movq (list (select-atm a) x)) (Instr 'notq (list x)))]       
+            [(Prim 'eq? (list (? atm? a) (? atm? b))) (list (Instr 'cmqp (list (select-atm b) (select-atm a))) (Instr 'sete (list (Reg 'al))) (Instr 'movzbq (list (Reg 'al) x)))]
+            [(Prim '< (list (? atm? a) (? atm? b))) (list (Instr 'cmqp (list (select-atm b) (select-atm a))) (Instr 'setl (list (Reg 'al))) (Instr 'movzbq (list (Reg 'al) x)))]
+            [(Prim '> (list (? atm? a) (? atm? b))) (list (Instr 'cmqp (list (select-atm b) (select-atm a))) (Instr 'setg (list (Reg 'al))) (Instr 'movzbq (list (Reg 'al) x)))]
+            [(Prim '<= (list (? atm? a) (? atm? b))) (list (Instr 'cmqp (list (select-atm b) (select-atm a))) (Instr 'setle (list (Reg 'al))) (Instr 'movzbq (list (Reg 'al) x)))]
+            [(Prim '>= (list (? atm? a) (? atm? b))) (list (Instr 'cmqp (list (select-atm b) (select-atm a))) (Instr 'setge (list (Reg 'al))) (Instr 'movzbq (list (Reg 'al) x)))]
+            ))]))
 
 ;; select-instructions : Cvar -> x86var
 (define (select-instructions p)
@@ -433,7 +455,7 @@
   ("uniquify" ,uniquify ,interp-Lif,type-check-Lif)
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lif,type-check-Lif)
     ("explicate control" ,explicate-control ,interp-Cif,type-check-Cif)
-    ; ("instruction selection" ,select-instructions ,interp-x86-0)
+    ("instruction selection" ,select-instructions ,interp-pseudo-x86-1)
     ; ("uncover live" ,uncover-live ,interp-x86-0)
     ; ("build interference" ,build-interference ,interp-x86-0)
     ; ("allocate registers", allocate-registers ,interp-x86-0)
