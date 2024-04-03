@@ -6,9 +6,11 @@
 (require "interp-Lint.rkt")
 (require "interp-Lvar.rkt")
 (require "interp-Lif.rkt")
+(require "interp-Lwhile.rkt")
 (require "interp-Cvar.rkt")
 (require "interp-Cif.rkt")
 (require "type-check-Lvar.rkt")
+(require "type-check-Lwhile.rkt")
 (require "type-check-Cvar.rkt")
 (require "type-check-Lif.rkt")
 (require "type-check-Cif.rkt")
@@ -26,6 +28,10 @@
       [(Let x e body)
        (let ([sub-env (dict-set env x (gensym x))])
          (Let (dict-ref sub-env x) ((uniquify-exp env) e) ((uniquify-exp sub-env) body)))]
+      [(SetBang x exp) (SetBang (dict-ref env x) ((uniquify-exp env) exp))]
+      [(Begin es body) (Begin (for/list ([e es])
+                  ((uniquify-exp env) e)) ((uniquify-exp env) body))]
+      [(WhileLoop exp1 exp2) (WhileLoop ((uniquify-exp env) exp1) ((uniquify-exp env) exp2))]
       [(Prim op es)
        (Prim op
              (for/list ([e es])
@@ -43,6 +49,10 @@
     [(Prim 'or (list a b)) (If (shrink-exp a) (Bool #t) (shrink-exp b))]
     [(If a b c) (If (shrink-exp a) (shrink-exp b) (shrink-exp c))]
     [(Let x e body) (Let x (shrink-exp e) (shrink-exp body))]
+    [(SetBang var exp) (SetBang var (shrink-exp exp))]
+    [(Begin es body) (Begin (for/list ([e es])
+                (shrink-exp e)) (shrink-exp body))]
+    [(WhileLoop exp1 exp2) (WhileLoop (shrink-exp exp1) (shrink-exp exp2))]
     [(Prim op es)
      (Prim op
            (for/list ([e es])
@@ -519,15 +529,15 @@
 (define compiler-passes
   ;; Uncomment the following passes as you finish them.
   `(
-    ("shrink" ,shrink ,interp-Lif ,type-check-Lif)
-    ("uniquify" ,uniquify ,interp-Lif ,type-check-Lif)
-    ("remove complex opera*" ,remove-complex-opera* ,interp-Lif ,type-check-Lif)
-    ("explicate control" ,explicate-control ,interp-Cif ,type-check-Cif)
-    ("instruction selection" ,select-instructions ,interp-pseudo-x86-1)
-    ("uncover live" ,uncover-live ,interp-x86-1)
-    ("build interference" ,build-interference ,interp-x86-1)
-    ("allocate registers", allocate-registers ,interp-x86-1)
-    ; ("assign homes" ,assign-homes ,interp-x86-0)
-    ("patch instructions" ,patch-instructions ,interp-x86-1)
-    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
+    ("shrink" ,shrink ,interp-Lwhile,type-check-Lwhile)
+    ("uniquify" ,uniquify ,interp-Lwhile, type-check-Lwhile)
+    ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lwhile,type-check-Lwhile)
+    ; ("explicate control" ,explicate-control ,interp-Cwhile,type-check-Cwhile)
+    ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-1)
+    ; ("uncover live" ,uncover-live ,interp-x86-1)
+    ; ("build interference" ,build-interference ,interp-x86-1)
+    ; ("allocate registers", allocate-registers ,interp-x86-1)
+    ; ; ("assign homes" ,assign-homes ,interp-x86-0)
+    ; ("patch instructions" ,patch-instructions ,interp-x86-1)
+    ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
     ))
