@@ -97,10 +97,12 @@
 (define (uncover-get! p)
   (match p
     [(Program info e) (Program info ((uncover-get!-exp (collect-set! e)) e))]))
+
 (define (remove-complex-opera-exp
          env) ;; TODO: this function currently does nothing. Your code goes here
   (lambda (e)
     (match e
+	  [(GetBang x) (Var x)]
       [(If a b c)
        (If ((remove-complex-opera-exp env) a)
            ((remove-complex-opera-exp env) b)
@@ -566,7 +568,7 @@
     ("shrink" ,shrink ,interp-Lwhile,type-check-Lwhile)
     ("uniquify" ,uniquify ,interp-Lwhile, type-check-Lwhile)
     ("uncover-get!" ,uncover-get!,interp-Lwhile, type-check-Lwhile)
-    ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lwhile,type-check-Lwhile)
+    ("remove complex opera*" ,remove-complex-opera* ,interp-Lwhile,type-check-Lwhile)
     ; ("explicate control" ,explicate-control ,interp-Cwhile,type-check-Cwhile)
     ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-1)
     ; ("uncover live" ,uncover-live ,interp-x86-1)
