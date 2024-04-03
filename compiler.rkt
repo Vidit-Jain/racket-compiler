@@ -63,6 +63,40 @@
   (match p
     [(Program info e) (Program info (shrink-exp e))]))
 
+(define (collect-set! e)
+  (match e
+	[(Let x rhs body) (set-union (collect-set! rhs) (collect-set! body))]
+	[(SetBang var rhs) (set-union (set var) (collect-set! rhs))]
+    [(If a b c) (set-union (collect-set! a) (collect-set! b) (collect-set! c))]
+	[(Begin es body) (set-union (foldr (lambda (item acc)
+										 (set-union acc (collect-set! item))) (set) es) (collect-set! body))]
+    [(WhileLoop exp1 exp2) (set-union (collect-set! exp1) (collect-set! exp2))]
+    [(Prim op es)
+     (foldl (lambda (item acc)
+					(set-union acc (collect-set! item))) (set) es)]
+	[_ (set)]))
+
+(define ((uncover-get!-exp set!-vars) e)
+  (match e
+	[(Var x)
+	 (if (set-member? set!-vars x)
+	   (GetBang x)
+	   e)]	
+    [(If a b c) (If ((uncover-get!-exp set!-vars) a) ((uncover-get!-exp set!-vars) b) ((uncover-get!-exp set!-vars) c))]
+    [(Let x e body) (Let x ((uncover-get!-exp set!-vars) e) ((uncover-get!-exp set!-vars) body))]
+    [(SetBang var exp) (SetBang var ((uncover-get!-exp set!-vars) exp))]
+    [(Begin es body) (Begin (for/list ([e es])
+                ((uncover-get!-exp set!-vars) e)) ((uncover-get!-exp set!-vars) body))]
+    [(WhileLoop exp1 exp2) (WhileLoop ((uncover-get!-exp set!-vars) exp1) ((uncover-get!-exp set!-vars) exp2))]
+    [(Prim op es)
+     (Prim op
+           (for/list ([e es])
+             ((uncover-get!-exp set!-vars) e)))]
+	[_ e]))
+
+(define (uncover-get! p)
+  (match p
+    [(Program info e) (Program info ((uncover-get!-exp (collect-set! e)) e))]))
 (define (remove-complex-opera-exp
          env) ;; TODO: this function currently does nothing. Your code goes here
   (lambda (e)
@@ -531,6 +565,7 @@
   `(
     ("shrink" ,shrink ,interp-Lwhile,type-check-Lwhile)
     ("uniquify" ,uniquify ,interp-Lwhile, type-check-Lwhile)
+    ("uncover-get!" ,uncover-get!,interp-Lwhile, type-check-Lwhile)
     ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lwhile,type-check-Lwhile)
     ; ("explicate control" ,explicate-control ,interp-Cwhile,type-check-Cwhile)
     ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-1)
