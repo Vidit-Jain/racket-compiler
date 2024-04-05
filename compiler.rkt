@@ -45,6 +45,26 @@
   (match p
     [(Program info e) (Program info ((uniquify-exp '()) e))]))
 
+; (define (analyze_dataflow G transfer bottom join)
+;   (for ([v (in-vertices G)])
+;     (dict-set! label->live v bottom))
+;   (define worklist (make-queue))
+;   (for ([v (in-vertices G)])
+;     (enqueue! worklist v))
+;   (define trans-G (transpose G))
+;   (while (not (queue-empty? worklist))
+;          (define node (dequeue! worklist))
+;          (define input
+;            (for/fold ([state bottom]) ([pred (in-neighbors trans-G node)])
+;              (join state (dict-ref label->live pred))))
+;          (define output (transfer node (list input)))
+;          (cond
+;            [(not (equal? output (dict-ref label->live node)))
+;             (dict-set! label->live node output)
+;             (for ([v (in-neighbors G node)])
+;               (enqueue! worklist v))])))
+; 
+
 (define (shrink-exp e)
   (match e
     [(Prim 'and (list a b)) (If (shrink-exp a) (shrink-exp b) (Bool #f))]
@@ -67,23 +87,23 @@
 
 (define (collect-set! e)
   (match e
-	[(Let x rhs body) (set-union (collect-set! rhs) (collect-set! body))]
-	[(SetBang var rhs) (set-union (set var) (collect-set! rhs))]
+  [(Let x rhs body) (set-union (collect-set! rhs) (collect-set! body))]
+  [(SetBang var rhs) (set-union (set var) (collect-set! rhs))]
     [(If a b c) (set-union (collect-set! a) (collect-set! b) (collect-set! c))]
-	[(Begin es body) (set-union (foldr (lambda (item acc)
-										 (set-union acc (collect-set! item))) (set) es) (collect-set! body))]
+  [(Begin es body) (set-union (foldr (lambda (item acc)
+                     (set-union acc (collect-set! item))) (set) es) (collect-set! body))]
     [(WhileLoop exp1 exp2) (set-union (collect-set! exp1) (collect-set! exp2))]
     [(Prim op es)
      (foldl (lambda (item acc)
-					(set-union acc (collect-set! item))) (set) es)]
-	[_ (set)]))
+          (set-union acc (collect-set! item))) (set) es)]
+  [_ (set)]))
 
 (define ((uncover-get!-exp set!-vars) e)
   (match e
-	[(Var x)
-	 (if (set-member? set!-vars x)
-	   (GetBang x)
-	   e)]	
+  [(Var x)
+   (if (set-member? set!-vars x)
+     (GetBang x)
+     e)]  
     [(If a b c) (If ((uncover-get!-exp set!-vars) a) ((uncover-get!-exp set!-vars) b) ((uncover-get!-exp set!-vars) c))]
     [(Let x e body) (Let x ((uncover-get!-exp set!-vars) e) ((uncover-get!-exp set!-vars) body))]
     [(SetBang var exp) (SetBang var ((uncover-get!-exp set!-vars) exp))]
@@ -94,7 +114,7 @@
      (Prim op
            (for/list ([e es])
              ((uncover-get!-exp set!-vars) e)))]
-	[_ e]))
+  [_ e]))
 
 (define (uncover-get! p)
   (match p
@@ -104,11 +124,11 @@
          env) ;; TODO: this function currently does nothing. Your code goes here
   (lambda (e)
     (match e
-	  [(Begin es body) (Begin (for/list ([e es])
-								((remove-complex-opera-exp env) e)) ((remove-complex-opera-exp env) body))]
-	  [(WhileLoop exp1 exp2) (WhileLoop ((remove-complex-opera-exp env) exp1) ((remove-complex-opera-exp env) exp2))]
-	  [(SetBang var exp) (SetBang var ((remove-complex-opera-exp env) exp))]
-	  [(GetBang x) (Var x)]
+    [(Begin es body) (Begin (for/list ([e es])
+                ((remove-complex-opera-exp env) e)) ((remove-complex-opera-exp env) body))]
+    [(WhileLoop exp1 exp2) (WhileLoop ((remove-complex-opera-exp env) exp1) ((remove-complex-opera-exp env) exp2))]
+    [(SetBang var exp) (SetBang var ((remove-complex-opera-exp env) exp))]
+    [(GetBang x) (Var x)]
       [(If a b c)
        (If ((remove-complex-opera-exp env) a)
            ((remove-complex-opera-exp env) b)
@@ -140,8 +160,7 @@
 
 (define (explicate_tail e)
   (match e
-    [(Var x) 
-	  (Return (Var x))]
+    [(Var x) (Return (Var x))]
     [(Int n) (Return (Int n))]
     [(Bool n) (Return (Bool n))]
     [(Let x rhs body) (explicate_assign rhs x (explicate_tail body))]
@@ -149,6 +168,11 @@
     [(If a b c) (explicate_pred a (explicate_tail b) (explicate_tail c))]
     [(Begin es body) #:when (empty? es) (explicate_tail body)]
     [(Begin es body) (explicate-effect (first es) (explicate_tail (Begin (rest es) body)))]
+    [(SetBang y rhs) (explicate_assign rhs y (Return (Void)))]
+    [(WhileLoop cnd body) 
+       (let [(loop (gensym 'loop))]
+         (set! basic-blocks (cons (cons loop (explicate_pred cnd (explicate-effect body (Goto loop)) (Return (Void)))) basic-blocks))
+         (Goto loop))]
     [else (error "explicate_tail unhandled case" e)])                                 
     )
 
@@ -162,6 +186,13 @@
     [(Begin es body) #:when (empty? es) (explicate_assign body x cont)]
     [(Begin es body) (explicate-effect (first es) (explicate_assign (Begin (rest es) body) x cont))]
     [(If a b c) (explicate_pred a (explicate_assign b x cont) (explicate_assign c x cont))]
+    [(SetBang y rhs) (explicate_assign rhs y (Assign (Var x) (Void)))]
+    [(WhileLoop cnd body) 
+     (Seq 
+       (Assign (Var x) (Void))
+       (let [(loop (gensym 'loop))]
+         (set! basic-blocks (cons (cons loop (explicate_pred cnd (explicate-effect body (Goto loop)) cont)) basic-blocks))
+         (Goto loop)))]
     [else (error "explicate_assign unhandled case" e)]))
 
 (define (explicate_pred cnd thn els)
@@ -184,13 +215,13 @@
     [(SetBang x rhs) (explicate_assign rhs x cont)]
     [(Begin es body) #:when (empty? es) (explicate-effect body cont)]
     [(Begin es body) (explicate-effect (first es) (explicate-effect (Begin (rest es) body) cont))]
-	[(WhileLoop cnd body) 
-	 (let [(loop (gensym 'loop))]
-   		 (set! basic-blocks (cons (cons loop (explicate_pred cnd (explicate-effect body (Goto loop)) cont)) basic-blocks))
-		 (Goto loop)
-	   )]
+    [(WhileLoop cnd body) 
+     (let [(loop (gensym 'loop))]
+       (set! basic-blocks (cons (cons loop (explicate_pred cnd (explicate-effect body (Goto loop)) cont)) basic-blocks))
+     (Goto loop)
+     )]
     [(Let x rhs body) (explicate_assign rhs x (explicate-effect body cont))]
-	[(If cnd thn els) (explicate_pred cnd (explicate-effect thn cont) (explicate-effect els cont))]
+    [(If cnd thn els) (explicate_pred cnd (explicate-effect thn cont) (explicate-effect els cont))]
     [_ cont]
   )
 )
@@ -240,15 +271,18 @@
   (match e
     [(Var x) e]
     [(Int x) (Imm x)]
-    [(Bool x) (Imm (if x 1 0))]))
+    [(Bool x) (Imm (if x 1 0))]
+    [(Void) (Imm 0)]
+  ))
 
 (define (select-stmt e)
   (match e
+    [(Prim 'read '()) (list (Callq 'read_int 0))]
     [(Assign x e)
      (if (atm? e)
          (list (Instr 'movq (list (select-atm e) x)))
          (match e
-           [(Prim 'read '()) (list (Callq 'read_int 1) (Instr 'movq (list (Reg 'rax) x)))]
+           [(Prim 'read '()) (list (Callq 'read_int 0) (Instr 'movq (list (Reg 'rax) x)))]
            [(Prim '- (list a)) (list (Instr 'movq (list (select-atm a) x)) (Instr 'negq (list x)))]
            [(Prim '+ (list a b))
             (cond
@@ -579,7 +613,7 @@
 
   (while (> (pqueue-count pq) 0)
          (let ([c (pqueue-pop! pq)])
-           (hash-set! color c (find-color (hash-ref used c) 0))
+           (hash-set! color c (- 10 (find-color (hash-ref used c) 0)))
 
            (let ([num (hash-ref color c)])
              (cond
@@ -602,7 +636,7 @@
     ("uncover-get!" ,uncover-get!,interp-Lwhile, type-check-Lwhile)
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lwhile,type-check-Lwhile)
     ("explicate control" ,explicate-control ,interp-Cwhile,type-check-Cwhile)
-    ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-1)
+    ("instruction selection" ,select-instructions ,interp-pseudo-x86-1)
     ; ("uncover live" ,uncover-live ,interp-x86-1)
     ; ("build interference" ,build-interference ,interp-x86-1)
     ; ("allocate registers", allocate-registers ,interp-x86-1)
