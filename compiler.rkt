@@ -106,7 +106,7 @@
     (match e
 	  [(Begin es body) (Begin (for/list ([e es])
 								((remove-complex-opera-exp env) e)) ((remove-complex-opera-exp env) body))]
-	  [(WhileLoop exp1 exp2) (WhileLoop ((remove-complex-opera-exp env) exp1 exp2))]
+	  [(WhileLoop exp1 exp2) (WhileLoop ((remove-complex-opera-exp env) exp1) ((remove-complex-opera-exp env) exp2))]
 	  [(SetBang var exp) (SetBang var ((remove-complex-opera-exp env) exp))]
 	  [(GetBang x) (Var x)]
       [(If a b c)
@@ -140,7 +140,8 @@
 
 (define (explicate_tail e)
   (match e
-    [(Var x) (Return (Var x))]
+    [(Var x) 
+	  (Return (Var x))]
     [(Int n) (Return (Int n))]
     [(Bool n) (Return (Bool n))]
     [(Let x rhs body) (explicate_assign rhs x (explicate_tail body))]
@@ -183,21 +184,17 @@
     [(SetBang x rhs) (explicate_assign rhs x cont)]
     [(Begin es body) #:when (empty? es) (explicate-effect body cont)]
     [(Begin es body) (explicate-effect (first es) (explicate-effect (Begin (rest es) body) cont))]
-	[(WhileLoop cnd body) (explicate-control-while-loop e cont)]
+	[(WhileLoop cnd body) 
+	 (let [(loop (gensym 'loop))]
+   		 (set! basic-blocks (cons (cons loop (explicate_pred cnd (explicate-effect body (Goto loop)) cont)) basic-blocks))
+		 (Goto loop)
+	   )]
     [(Let x rhs body) (explicate_assign rhs x (explicate-effect body cont))]
 	[(If cnd thn els) (explicate_pred cnd (explicate-effect thn cont) (explicate-effect els cont))]
     [_ cont]
   )
 )
 
-(define (explicate-control-while-loop e cont)
-  (match e
-    [(WhileLoop cnd body)
-     (let ([label (gensym 'loop)] [label-cont (gensym 'cont)])
-       (set! basic-blocks (cons (cons label-cont cont) basic-blocks))
-       (set! basic-blocks (cons (cons label (Seq (IfStmt cnd (explicate-effect (first body) (explicate-effect (rest body))) (Goto label-cont)) (Goto label))) basic-blocks))
-       (Goto label)
-      )]))
 
 (define basic-blocks '())
 
@@ -208,6 +205,7 @@
      (let ([label (gensym 'block)])
        (set! basic-blocks (cons (cons label tail) basic-blocks))
        (Goto label))]))
+
 ;; remove-complex-opera* : Lvar -> Lvar^mon
 (define (remove-complex-opera* p)
   (match p
