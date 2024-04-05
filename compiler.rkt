@@ -7,6 +7,7 @@
 (require "interp-Lvar.rkt")
 (require "interp-Lif.rkt")
 (require "interp-Lwhile.rkt")
+(require "interp-Cwhile.rkt")
 (require "interp-Cvar.rkt")
 (require "interp-Cif.rkt")
 (require "type-check-Lvar.rkt")
@@ -14,6 +15,7 @@
 (require "type-check-Cvar.rkt")
 (require "type-check-Lif.rkt")
 (require "type-check-Cif.rkt")
+(require "type-check-Cwhile.rkt")
 (require "utilities.rkt")
 (require "interp.rkt")
 (require "multigraph.rkt")
@@ -140,7 +142,12 @@
     [(Let x rhs body) (explicate_assign rhs x (explicate_tail body))]
     [(Prim op es) (Return (Prim op es))]
     [(If a b c) (explicate_pred a (explicate_tail b) (explicate_tail c))]
-    [else (error "explicate_tail unhandled case" e)]))
+    [(Begin es body) (explicate-effect (first es) (explicate_tail (Begin (rest es) body)))]
+    [(SetBang x rhs) (explicate_assign rhs x (void))]
+    [(GetBang x) (Return (Var x))]
+    [(WhileLoop cnd body) (explicate-control-while-loop e (void))]
+    [else (error "explicate_tail unhandled case" e)])                                 
+    )
 
 (define (explicate_assign e x cont)
   (match e
@@ -164,6 +171,24 @@
     [(Bool b) (if b thn els)]
     [(If cnd^ thn^ els^)
      (explicate_pred cnd^ (explicate_pred thn^ thn els) (explicate_pred els^ thn els))]))
+
+(define (explicate-effect e cont)
+  (match e
+    [(SetBang x rhs) (explicate_assign rhs x cont)]
+    [(Begin es body) (explicate-effect (first es) (explicate-effect (Begin (rest es) body) cont))]
+    [(Let x rhs body) (explicate_assign rhs x (explicate-effect body cont))]
+    [_ (Seq (void) cont)]
+  )
+)
+
+(define (explicate-control-while-loop e cont)
+  (match e
+    [(WhileLoop cnd body)
+     (let ([label (gensym 'loop)] [label-cont (gensym 'cont)])
+       (set! basic-blocks (cons (cons label-cont cont) basic-blocks))
+       (set! basic-blocks (cons (cons label (Seq (IfStmt cnd (explicate-effect (first body) (explicate-effect (rest body))) (Goto label-cont)) (Goto label))) basic-blocks))
+       (Goto label)
+      )]))
 
 (define basic-blocks '())
 
@@ -569,7 +594,7 @@
     ("uniquify" ,uniquify ,interp-Lwhile, type-check-Lwhile)
     ("uncover-get!" ,uncover-get!,interp-Lwhile, type-check-Lwhile)
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lwhile,type-check-Lwhile)
-    ; ("explicate control" ,explicate-control ,interp-Cwhile,type-check-Cwhile)
+    ("explicate control" ,explicate-control ,interp-Cwhile,type-check-Cwhile)
     ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-1)
     ; ("uncover live" ,uncover-live ,interp-x86-1)
     ; ("build interference" ,build-interference ,interp-x86-1)
