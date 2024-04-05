@@ -104,6 +104,10 @@
          env) ;; TODO: this function currently does nothing. Your code goes here
   (lambda (e)
     (match e
+	  [(Begin es body) (Begin (for/list ([e es])
+								((remove-complex-opera-exp env) e)) ((remove-complex-opera-exp env) body))]
+	  [(WhileLoop exp1 exp2) (WhileLoop ((remove-complex-opera-exp env) exp1 exp2))]
+	  [(SetBang var exp) (SetBang var ((remove-complex-opera-exp env) exp))]
 	  [(GetBang x) (Var x)]
       [(If a b c)
        (If ((remove-complex-opera-exp env) a)
@@ -142,10 +146,8 @@
     [(Let x rhs body) (explicate_assign rhs x (explicate_tail body))]
     [(Prim op es) (Return (Prim op es))]
     [(If a b c) (explicate_pred a (explicate_tail b) (explicate_tail c))]
+    [(Begin es body) #:when (empty? es) (explicate_tail body)]
     [(Begin es body) (explicate-effect (first es) (explicate_tail (Begin (rest es) body)))]
-    [(SetBang x rhs) (explicate_assign rhs x (void))]
-    [(GetBang x) (Return (Var x))]
-    [(WhileLoop cnd body) (explicate-control-while-loop e (void))]
     [else (error "explicate_tail unhandled case" e)])                                 
     )
 
@@ -156,6 +158,8 @@
     [(Bool n) (Seq (Assign (Var x) (Bool n)) cont)]
     [(Let y rhs body) (explicate_assign rhs y (explicate_assign body x cont))]
     [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
+    [(Begin es body) #:when (empty? es) (explicate_assign body x cont)]
+    [(Begin es body) (explicate-effect (first es) (explicate_assign (Begin (rest es) body) x cont))]
     [(If a b c) (explicate_pred a (explicate_assign b x cont) (explicate_assign c x cont))]
     [else (error "explicate_assign unhandled case" e)]))
 
@@ -169,15 +173,20 @@
      #:when (or (eq? op 'eq?) (eq? op '<) (eq? op '>) (eq? op '<=) (eq? op '>=))
      (IfStmt (Prim op es) (create_block thn) (create_block els))]
     [(Bool b) (if b thn els)]
+    [(Begin es body) #:when (empty? es) (explicate_pred body thn els)]
+    [(Begin es body) (explicate-effect (first es) (explicate_pred (Begin (rest es) body) thn els))]
     [(If cnd^ thn^ els^)
      (explicate_pred cnd^ (explicate_pred thn^ thn els) (explicate_pred els^ thn els))]))
 
 (define (explicate-effect e cont)
   (match e
     [(SetBang x rhs) (explicate_assign rhs x cont)]
+    [(Begin es body) #:when (empty? es) (explicate-effect body cont)]
     [(Begin es body) (explicate-effect (first es) (explicate-effect (Begin (rest es) body) cont))]
+	[(WhileLoop cnd body) (explicate-control-while-loop e cont)]
     [(Let x rhs body) (explicate_assign rhs x (explicate-effect body cont))]
-    [_ (Seq (void) cont)]
+	[(If cnd thn els) (explicate_pred cnd (explicate-effect thn cont) (explicate-effect els cont))]
+    [_ cont]
   )
 )
 
