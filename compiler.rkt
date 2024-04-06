@@ -1,7 +1,8 @@
 #lang racket
 (require racket/set
          racket/stream
-         graph)
+         graph
+         data/queue)
 (require racket/fixnum)
 (require "interp-Lint.rkt")
 (require "interp-Lvar.rkt")
@@ -45,25 +46,6 @@
   (match p
     [(Program info e) (Program info ((uniquify-exp '()) e))]))
 
-; (define (analyze_dataflow G transfer bottom join)
-;   (for ([v (in-vertices G)])
-;     (dict-set! label->live v bottom))
-;   (define worklist (make-queue))
-;   (for ([v (in-vertices G)])
-;     (enqueue! worklist v))
-;   (define trans-G (transpose G))
-;   (while (not (queue-empty? worklist))
-;          (define node (dequeue! worklist))
-;          (define input
-;            (for/fold ([state bottom]) ([pred (in-neighbors trans-G node)])
-;              (join state (dict-ref label->live pred))))
-;          (define output (transfer node (list input)))
-;          (cond
-;            [(not (equal? output (dict-ref label->live node)))
-;             (dict-set! label->live node output)
-;             (for ([v (in-neighbors G node)])
-;               (enqueue! worklist v))])))
-; 
 
 (define (shrink-exp e)
   (match e
@@ -244,6 +226,7 @@
 
 ;; explicate-control : Lvar^mon -> Cvar
 (define (explicate-control p)
+  (set! basic-blocks '())
   (match p
     [(Program info e) (CProgram info (cons (cons 'start (explicate_tail e)) basic-blocks))]))
 
@@ -317,16 +300,12 @@
                   (Instr 'set (list 'ge (ByteReg 'al)))
                   (Instr 'movzbq (list (ByteReg 'al) x)))]))]))
 
-;; select-instructions : Cvar -> x86var
 (define (select-instructions p)
   (match p
     [(CProgram info (list (cons label-list tail-list) ...))
-     ;;; (cons label-list tail-list)]))
      (X86Program info
-                 (for/list ([label label-list] [tail tail-list])
-                   ;;; (cons label tail)))]))
-                   ;;; (cons label (Block '() (list tail)))))]))
-                   (cons label (Block '() (select-tail tail)))))]))
+                 (make-hash (for/list ([label label-list] [tail tail-list])
+					(cons label (Block '() (select-tail tail))))))]))
 
 (define (assign-var-offset var-list)
   (match var-list
@@ -397,13 +376,9 @@
 
 
 ;(error "TODO: code goes here (patch-instructions)"))
-
-(define (compute-delta a b)
-  (define c (+ a b))
-  (Imm (match (modulo c 16)
-         [0 (- c b)]
-         [_ (- (* 16 (+ (quotient c 16) 1)) b)])))
-;; prelude-and-conclusion : x86int -> x86int
+(define (compute-delta C S)
+  (Imm (- (align (+ C S) 16) C))
+  )
 (define (prelude-and-conclusion p)
   (match p
     [(X86Program info block-lists)
@@ -417,14 +392,14 @@
                                  (for/list ([reg (dict-ref info 'callee-used)])
                                    (Instr 'pushq (list (Reg (color->register reg)))))
                                  (list (Instr 'subq
-                                              (let ([C (length (dict-ref info 'callee-used))]
+                                              (let ([C (* 8 (length (dict-ref info 'callee-used)))]
                                                     [S (dict-ref info 'stack-space)])
                                                 (list (compute-delta C S) (Reg 'rsp))))
                                        (Jmp 'start)))))
             (cons 'conclusion
                   (Block '()
                          (cons (Instr 'addq
-                                      (let ([C (length (dict-ref info 'callee-used))]
+                                      (let ([C (* 8 (length (dict-ref info 'callee-used)))]
                                             [S (dict-ref info 'stack-space)])
                                         (list (compute-delta C S) (Reg 'rsp))))
                                (append (for/list ([reg (reverse (dict-ref info 'callee-used))])
@@ -463,19 +438,19 @@
     [(Instr 'movq (list arg1 arg2)) (locations-appear (list arg2))]
     [(Instr 'pushq (list arg)) (locations-appear (list (Reg 'rsp)))]
     [(Instr 'popq (list arg)) (locations-appear (list arg (Reg 'rsp)))]
-    [(Callq name num) (locations-appear (list (Reg 'rax)))]
+    [(Callq name num) (locations-appear (list (Reg 'rax) (Reg 'rcx) (Reg 'rdx) (Reg 'rsi) (Reg 'rdi) (Reg 'r8)(Reg 'r9)(Reg 'r10)(Reg 'r11)))]
     [(Instr 'cmpq (list arg1 arg2)) (set)]
     [(Instr 'xorq (list arg1 arg2)) (locations-appear (list arg2))]
     [(Instr 'set (list arg1 arg2)) (locations-appear (list arg2))]
     [(Instr 'movzbq (list arg1 arg2)) (locations-appear (list arg2))]
     [_ (set)]))
 
-(define (uncover-live-instrs instrs init-live-after live-before-label)
+(define live-before-label (make-hash))
+(define (uncover-live-instrs instrs init-live-after)
   (foldr
    (lambda (instr acc)
      (match instr
        [(JmpIf _ label) (cons (set-union (dict-ref live-before-label label) (first acc)) acc)]
-       [(Jmp 'conclusion) (cons (set 'rax 'rsp) acc)]
        [(Jmp label) (cons (dict-ref live-before-label label) acc)]
        [_
         (cons (set-union (set-subtract (first acc) (locations-write-by-instr instr))
@@ -483,31 +458,40 @@
               acc)]))
    (list init-live-after)
    instrs))
+ (define ((do-uncover dict-label-block) block-label init-live-after)
+   (match (dict-ref dict-label-block block-label) 
+     [(Block block-info instrs)
+      (let ([live-sets (uncover-live-instrs instrs (list init-live-after))])
+       (dict-set! dict-label-block block-label (Block (dict-set block-info 'live-after (rest live-sets)) instrs))
+         (first live-sets))]))
+ (define (uncover-live p)
+   (dict-clear! live-before-label)
+   (match p
+     [(X86Program pinfo dict-label-block)
+        (let ([label-list (hash-keys dict-label-block)] [block-list (hash-values dict-label-block)])
+ 		(match block-list
+ 		  [(list (Block block-info-list instrs-list) ...)
+ 			(dict-set! live-before-label 'conclusion (set 'rax 'rsp))
+           (analyze_dataflow (transpose (gen-cfg label-list instrs-list)) (do-uncover dict-label-block) (set) set-union)
+             (X86Program (dict-set pinfo 'live live-before-label) dict-label-block)]))]))
 
-(define (do-uncover dict-label-block t-order pinfo)
-  (let ([live-before-label (make-hash)])
-    (let ([blocks (for/list ([label t-order])
-                    (match (dict-ref dict-label-block label)
-                      [(Block block-info instrs)
-                       (let ([live-sets (uncover-live-instrs instrs (set) live-before-label)])
-                          (dict-set! live-before-label label (first live-sets))
-                          (cons label
-                                (Block (dict-set block-info 'live-after (rest live-sets))
-                                       instrs)))]))])
-      (X86Program (dict-set pinfo 'live live-before-label) blocks))))
-
-(define (uncover-live p)
-  (match p
-    [(X86Program pinfo dict-label-block)
-     (match dict-label-block
-       [(list (cons label-list (Block block-info-list instrs-list)) ...)
-        (let ([t-order (gen-topological-order (gen-cfg label-list instrs-list))])
-          (do-uncover dict-label-block t-order (dict-set pinfo 'live '())))])]))
-
-
-
-(define (gen-topological-order graph)
-  (tsort (transpose graph)))
+(define (analyze_dataflow G transfer bottom join)
+  (for ([v (in-vertices G)])
+    (dict-set! live-before-label v bottom))
+  (define worklist (make-queue))
+  (for ([v (in-vertices G)])
+    (enqueue! worklist v))
+  (define trans-G (transpose G))
+  (while (not (queue-empty? worklist))
+    (define node (dequeue! worklist))
+    (define input (for/fold ([state bottom])
+            ([pred (in-neighbors trans-G node)])
+      (join state (dict-ref live-before-label pred))))
+  (define output (transfer node (list input)))
+  (cond [(not (equal? output (dict-ref live-before-label node)))
+    (dict-set! live-before-label node output)
+    (for ([v (in-neighbors G node)])
+    (enqueue! worklist v))])))
 
 (define (gen-cfg block-label-list instrs-list)
   (define graph (directed-graph '()))
@@ -517,7 +501,7 @@
     (for ([instr instrs])
       (match instr
         [(Jmp label^) #:when(not (equal? label^ 'conclusion)) (add-directed-edge! graph label label^)]
-        [(JmpIf _ label^) (add-directed-edge! graph label label^)]
+        [(JmpIf _ label^) #:when(not (equal? label^ 'conclusion))(add-directed-edge! graph label label^)]
         [_ (void)])))
   graph)
 
@@ -556,10 +540,15 @@
 
 (define (build-interference p)
   (match p
-    [(X86Program info (list (cons label-list (Block block-info-list instrs-list)) ...))
-     (X86Program (dict-set info 'conflicts (build-graph block-info-list instrs-list))
-                 (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
-                   (cons label (Block block-info instrs))))]))
+	[(X86Program info dict-label-block)
+	 (let ([label-list (hash-keys dict-label-block)] [block-list (hash-values dict-label-block)])
+		(match block-list
+		  [(list (Block block-info-list instrs-list)...)
+			 (X86Program (dict-set info 'conflicts (build-graph block-info-list instrs-list))
+						 (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
+						   (cons label (Block block-info instrs))))
+		   ]))]))
+
 (define (calc-offset num)
   (- (* (- num 6) 8)))
 (define (allocate-reg reg color)
@@ -613,7 +602,7 @@
 
   (while (> (pqueue-count pq) 0)
          (let ([c (pqueue-pop! pq)])
-           (hash-set! color c (- 10 (find-color (hash-ref used c) 0)))
+           (hash-set! color c (find-color (hash-ref used c) 0))
 
            (let ([num (hash-ref color c)])
              (cond
@@ -637,10 +626,10 @@
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lwhile,type-check-Lwhile)
     ("explicate control" ,explicate-control ,interp-Cwhile,type-check-Cwhile)
     ("instruction selection" ,select-instructions ,interp-pseudo-x86-1)
-    ; ("uncover live" ,uncover-live ,interp-x86-1)
-    ; ("build interference" ,build-interference ,interp-x86-1)
-    ; ("allocate registers", allocate-registers ,interp-x86-1)
-    ; ; ("assign homes" ,assign-homes ,interp-x86-0)
-    ; ("patch instructions" ,patch-instructions ,interp-x86-1)
-    ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
+    ("uncover live" ,uncover-live ,interp-x86-1)
+    ("build interference" ,build-interference ,interp-x86-1)
+    ("allocate registers", allocate-registers ,interp-x86-1)
+    ; ("assign homes" ,assign-homes ,interp-x86-0)
+    ("patch instructions" ,patch-instructions ,interp-x86-1)
+    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
     ))
