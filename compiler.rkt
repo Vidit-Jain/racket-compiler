@@ -244,7 +244,7 @@
     [(GlobalValue x) (Return (GlobalValue x))]
     [(Allocate n type) (Return (Allocate n type))]
     [(Collect n) (Return (Collect n))]
-    [else (error "explicate_tail unhandled case" e)])                                 
+    [_ (error "explicate_tail unhandled case" e)])                                 
     )
 
 (define (explicate_assign e x cont)
@@ -279,6 +279,9 @@
     [(Prim op es)
      #:when (or (eq? op 'eq?) (eq? op '<) (eq? op '>) (eq? op '<=) (eq? op '>=))
      (IfStmt (Prim op es) (create_block thn) (create_block els))]
+    [(Prim op es) #:when (or (eq? op 'vector-set!) (eq? op 'vector-ref))
+      (let ([cnd-tmp (gensym 'tmp)])
+      (explicate_assign cnd cnd-tmp (IfStmt (Prim 'eq? (list (Var cnd-tmp) (Bool #t))) (create_block thn) (create_block els))))]      
     [(Bool b) (if b thn els)]
     [(Begin es body) #:when (empty? es) (explicate_pred body thn els)]
     [(Begin es body) (explicate-effect (first es) (explicate_pred (Begin (rest es) body) thn els))]
@@ -433,9 +436,6 @@
                   (Instr 'andq (list (Imm 63) (Reg 'rax)))
                   (Instr 'movq (list (Reg 'rax) x)))]))]))
 
-
-
-
 (define (select-instructions p)
   (match p
     [(CProgram info (list (cons label-list tail-list) ...))
@@ -515,32 +515,57 @@
 (define (compute-delta C S)
   (Imm (- (align (+ C S) 16) C))
   )
+
+(define (align-16 x)
+  (if (zero? (remainder x 16))
+      x
+      (+ x 8)))
+
 (define (prelude-and-conclusion p)
   (match p
     [(X86Program info block-lists)
      (X86Program
       info
-      (append block-lists
-            (list (cons 'main
-                  (Block '()
-                         (append (list (Instr 'pushq (list (Reg 'rbp)))
-                                       (Instr 'movq (list (Reg 'rsp) (Reg 'rbp))))
-                                 (for/list ([reg (dict-ref info 'callee-used)])
-                                   (Instr 'pushq (list (Reg (color->register reg)))))
-                                 (list (Instr 'subq
-                                              (let ([C (* 8 (length (dict-ref info 'callee-used)))]
-                                                    [S (dict-ref info 'stack-space)])
-                                                (list (compute-delta C S) (Reg 'rsp))))
-                                       (Jmp 'start)))))
-            (cons 'conclusion
-                  (Block '()
-                         (cons (Instr 'addq
-                                      (let ([C (* 8 (length (dict-ref info 'callee-used)))]
-                                            [S (dict-ref info 'stack-space)])
-                                        (list (compute-delta C S) (Reg 'rsp))))
-                               (append (for/list ([reg (reverse (dict-ref info 'callee-used))])
-                                         (Instr 'popq (list (Reg (color->register reg)))))
-                                       (list (Instr 'popq (list (Reg 'rbp))) (Retq)))))))))]))
+      (append
+       block-lists
+       (list (cons 'main
+                   (Block '()
+                          (append (list (Instr 'pushq (list (Reg 'rbp)))
+                                        (Instr 'movq (list (Reg 'rsp) (Reg 'rbp)))
+                                        (Instr 'subq (list (Imm 0) (Reg 'rsp)))
+                                        (Instr 'movq (list (Imm 65536) (Reg 'rdi)))
+                                        (Instr 'movq (list (Imm 65536) (Reg 'rsi)))
+                                        (Callq 'initialize 2)
+                                        (Instr 'movq (list (Global 'rootstack-begin) (Reg 'r15)))
+                                        (Instr 'movq (list (Imm 0) (Deref 'r15 0)))
+                                        (Instr 'addq
+                                               (list (Imm (dict-ref info 'root-stack-space))
+                                                     (Reg 'r15))))
+                                  (for/list ([reg (dict-ref info 'callee-used)])
+                                    (Instr 'pushq (list (Reg (color->register reg)))))
+                                  (list (Instr 'subq
+                                               (let ([C (* 8 (length (dict-ref info 'callee-used)))]
+                                                     [S (dict-ref info 'stack-space)])
+                                                 (list (compute-delta C S) (Reg 'rsp))))
+                                        (Jmp 'start)))))
+             (cons 'conclusion
+                   (Block '()
+                          (cons (Instr 'addq
+                                       (let ([C (* 8 (length (dict-ref info 'callee-used)))]
+                                             [S (dict-ref info 'stack-space)])
+                                         (list (compute-delta C S) (Reg 'rsp))))
+                                (append (for/list ([reg (reverse (dict-ref info 'callee-used))])
+                                          (Instr 'popq (list (Reg (color->register reg)))))
+                                        (list (Instr 'subq
+                                                     (list (Imm (dict-ref info 'root-stack-space))
+                                                           (Reg 'r15)))
+                                              (Instr 'popq (list (Reg 'rbp)))
+                                              (Retq)))))))))]))
+
+
+(define caller-saved (set 'rax 'rcx 'rdx 'rsi 'rdi 'r8 'r9 'r10 'r11))
+(define callee-saved (set 'rsp 'rbp 'rbx 'r12 'r13 'r14 'r15))
+
 (define (locations-appear args)
   (if (empty? args)
       (set)
@@ -581,6 +606,7 @@
     [(Instr 'xorq (list arg1 arg2)) (locations-appear (list arg2))]
     [(Instr 'set (list arg1 arg2)) (locations-appear (list arg2))]
     [(Instr 'movzbq (list arg1 arg2)) (locations-appear (list arg2))]
+    [(Callq name num) (caller-saved)]
     [_ (set)]))
 
 (define live-before-label (make-hash))
@@ -655,8 +681,25 @@
   (match a
     [(Reg b) b]
     [(Var b) b]
+    [(Deref b c) b]
+    [(Global b) b]
+    [(Imm b) '()]
+    [(ByteReg b) b]
     [_ a]))
-(define (build-interference-block instrs live-after-list)
+
+(define (collect-edges-live-after live-after locals-types)
+  (foldr (lambda (var prev)
+           (cond
+             [(set-member? (set-union callee-saved caller-saved) var)(append (temp (set (decompose var)) caller-saved) prev)]
+             [else 
+              (match (dict-ref locals-types var)
+                ['(Vector ,a ...)
+                 (append (temp (set (decompose var)) (set-union callee-saved caller-saved)) prev)]
+                [else (append (temp (set (decompose var)) caller-saved) prev)])]))
+         '()
+         (set->list live-after)))
+
+(define (build-interference-block instrs live-after-list locals-types)
   (foldr
    (lambda (instr live-after prev)
      (match instr
@@ -664,15 +707,17 @@
         (append (temp (set (decompose arg2)) (set-subtract live-after (set (decompose arg1)))) prev)]
        [(Instr 'movzbq (list arg1 arg2))
         (append (temp (set (decompose arg2)) (set-subtract live-after (set (decompose arg1)))) prev)]
+       [(Callq 'collect _) (collect-edges-live-after live-after locals-types)]
        [_ (append (temp (locations-write-by-instr instr) live-after) prev)]))
    '()
    instrs
    live-after-list))
 
-(define (build-graph block-info-list instrs-list)
+
+(define (build-graph block-info-list instrs-list locals-types)
   (define graph (undirected-graph '()))
   (for/list ([block-info block-info-list] [instrs instrs-list])
-    (for ([edge (build-interference-block instrs (dict-ref block-info 'live-after))])
+    (for ([edge (build-interference-block instrs (dict-ref block-info 'live-after) locals-types)])
       (add-edge! graph (first edge) (last edge))))
   graph)
 
@@ -682,45 +727,62 @@
 	 (let ([label-list (hash-keys dict-label-block)] [block-list (hash-values dict-label-block)])
 		(match block-list
 		  [(list (Block block-info-list instrs-list)...)
-			 (X86Program (dict-set info 'conflicts (build-graph block-info-list instrs-list))
+			 (X86Program (dict-set info 'conflicts (build-graph block-info-list instrs-list (dict-ref info 'locals-types)))
 						 (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
 						   (cons label (Block block-info instrs))))
 		   ]))]))
 
 (define (calc-offset num)
   (- (* (- num 6) 8)))
-(define (allocate-reg reg color)
+
+(define stack-spills 0)
+(define root-stack-spills 0)
+
+(define (allocate-reg reg color locals-types)
   (match reg
     [(Var a)
      (let ([num (dict-ref color a)])
-       (if (>= num 11) (Deref 'rbp (calc-offset num)) (Reg (color->register (dict-ref color a)))))]
+       (if (>= num 11)
+           (match (dict-ref locals-types a)
+            ;;;  ['(Vector ,a ...) (Deref 'r15 (- (calc-offset num)))]
+            ;;;  [_ (Deref 'rbp (calc-offset num))])
+            ['(Vector ,a ...) (set! root-stack-spills (+ 1 root-stack-spills)) (Deref 'r15 (* 8 (- root-stack-spills 1)))]
+            [_ (set! stack-spills (+ 1 stack-spills)) (Deref 'rbp (* 8 (- stack-spills)))])
+           (Reg (color->register (dict-ref color a)))))]
     [_ reg]))
-(define (allocate-instr instr color)
+
+(define (allocate-instr instr color locals-types)
   (match instr
     [(Instr name arg*)
      (Instr name
             (for/list ([a arg*])
-              (allocate-reg a color)))]
+              (allocate-reg a color locals-types)))]
     [_ instr]))
-(define (allocate-block instrs color)
+
+(define (allocate-block instrs color locals-types)
   (for/list ([instr instrs])
-    (allocate-instr instr color)))
+    (allocate-instr instr color locals-types)))
+
 (define (allocate-registers p)
+  ;;; (set! stack-spills 0)
+  ;;; (set! root-stack-spills 0)
   (match p
     [(X86Program info (list (cons label-list (Block block-info-list instrs-list)) ...))
      (define-values (color callee-used)
        (graph-coloring (dict-ref info 'conflicts) (dict-ref info 'locals-types)))
       (displayln color)
-     (X86Program (dict-set (dict-set info 'callee-used (set->list callee-used))
+     (X86Program (dict-set (dict-set (dict-set info 'callee-used (set->list callee-used))
                            'stack-space
-                           (* (max 0 (- (max-color color) 10)) 8))
+                          ;;;  (* (max 0 (- (max-color color) 10)) 8)
+                           (* 8 stack-spills)) 'root-stack-space (* 8 root-stack-spills))
                  (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
-                   (cons label (Block block-info (allocate-block instrs color)))))]))
+                   (cons label (Block block-info (allocate-block instrs color (dict-ref info 'locals-types))))))]))
 
 (define (max-color ls)
   (foldl (lambda (a b) (max (cdr a) b)) 0 ls))
 
 (define (graph-coloring graph var-list)
+  (displayln (stream->list (in-edges graph)))
   (define color (make-hash))
   (define pq-handle (make-hash))
   (define used (make-hash))
@@ -773,6 +835,6 @@
     ("build interference" ,build-interference ,interp-pseudo-x86-2)
     ("allocate registers", allocate-registers ,interp-pseudo-x86-2)
     ;;; ; ("assign homes" ,assign-homes ,interp-x86-0)
-    ;;; ("patch instructions" ,patch-instructions ,interp-x86-1)
-    ;;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
+    ("patch instructions" ,patch-instructions ,interp-pseudo-x86-2)
+    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-pseudo-x86-2)
     ))
