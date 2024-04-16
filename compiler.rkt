@@ -11,12 +11,19 @@
 (require "interp-Cwhile.rkt")
 (require "interp-Cvar.rkt")
 (require "interp-Cif.rkt")
+(require "interp-Lvec.rkt")
+(require "interp-Lvec-prime.rkt")
+(require "interp-Cvec.rkt")
+
+(require "type-check-Lvec.rkt")
 (require "type-check-Lvar.rkt")
 (require "type-check-Lwhile.rkt")
 (require "type-check-Cvar.rkt")
 (require "type-check-Lif.rkt")
 (require "type-check-Cif.rkt")
 (require "type-check-Cwhile.rkt")
+(require "type-check-Cvec.rkt")
+
 (require "utilities.rkt")
 (require "interp.rkt")
 (require "multigraph.rkt")
@@ -102,15 +109,75 @@
   (match p
     [(Program info e) (Program info ((uncover-get!-exp (collect-set! e)) e))]))
 
+(define (expose-allocation p)
+  (match p
+    [(Program info e) (Program info ((expose-allocation-exp '()) e))]))
+
+(define (gen-tuple-init temp-vars-list vector-name index)
+  (if (empty? temp-vars-list)
+    (Var vector-name)
+    (Let '_ (Prim 'vector-set! (list (Var vector-name) (Int index) (Var (car temp-vars-list)))) (gen-tuple-init (cdr temp-vars-list) vector-name (+ index 1)))))
+
+(define (gen-let-exps vals-for-init vals-for-bind temp-vars-list type)
+  (if (empty? vals-for-bind)
+      (let ([bytes (* 8 (+ (length vals-for-init) 1))] [vector-name (gensym 'vector)])
+        (Let
+         '_
+         (If (Prim '< (list (Prim '+ (list (GlobalValue 'free_ptr) (Int bytes))) (GlobalValue 'fromspace_end))) (Void) (Collect bytes))
+         (Let vector-name
+              (Allocate (length vals-for-init) type)
+              (gen-tuple-init temp-vars-list vector-name 0))))
+      (let ([temp-var (gensym 'x)])
+        (Let temp-var
+             (car vals-for-bind)
+             (gen-let-exps vals-for-init
+                           (rest vals-for-bind)
+                           (append temp-vars-list (list temp-var))
+                           type)))))
+
+(define (expose-allocation-exp env)
+  (lambda (e)
+    (match e
+      [(HasType (Prim 'vector es) type)
+       (let ([list-vals (for/list ([e es])
+                          ((expose-allocation-exp env) e))])
+         (gen-let-exps list-vals list-vals '() type))]
+      [(Let x e body)
+       (let ([e^ ((expose-allocation-exp env) e)]) (Let x e^ ((expose-allocation-exp env) body)))]
+      [(SetBang var exp) (SetBang var ((expose-allocation-exp env) exp))]
+      [(If a b c)
+       (If ((expose-allocation-exp env) a)
+           ((expose-allocation-exp env) b)
+           ((expose-allocation-exp env) c))]
+      [(Begin es body)
+       (Begin (for/list ([e es])
+                ((expose-allocation-exp env) e))
+              ((expose-allocation-exp env) body))]
+      [(WhileLoop exp1 exp2)
+       (WhileLoop ((expose-allocation-exp env) exp1) ((expose-allocation-exp env) exp2))]
+      [(Prim op es)
+       (Prim op
+             (for/list ([e es])
+               ((expose-allocation-exp env) e)))]
+      [(Void) e]
+      [(Int n) e]
+      [(Bool n) e]
+      [(Var x) e]
+      [(Prim 'vector es) e]
+      [_ e])))
+
 (define (remove-complex-opera-exp
          env) ;; TODO: this function currently does nothing. Your code goes here
   (lambda (e)
     (match e
-    [(Begin es body) (Begin (for/list ([e es])
-                ((remove-complex-opera-exp env) e)) ((remove-complex-opera-exp env) body))]
-    [(WhileLoop exp1 exp2) (WhileLoop ((remove-complex-opera-exp env) exp1) ((remove-complex-opera-exp env) exp2))]
-    [(SetBang var exp) (SetBang var ((remove-complex-opera-exp env) exp))]
-    [(GetBang x) (Var x)]
+      [(Begin es body)
+       (Begin (for/list ([e es])
+                ((remove-complex-opera-exp env) e))
+              ((remove-complex-opera-exp env) body))]
+      [(WhileLoop exp1 exp2)
+       (WhileLoop ((remove-complex-opera-exp env) exp1) ((remove-complex-opera-exp env) exp2))]
+      [(SetBang var exp) (SetBang var ((remove-complex-opera-exp env) exp))]
+      [(GetBang x) (Var x)]
       [(If a b c)
        (If ((remove-complex-opera-exp env) a)
            ((remove-complex-opera-exp env) b)
@@ -137,6 +204,25 @@
                     ((remove-complex-opera-exp env) (last es))
                     ((remove-complex-opera-exp env) (Prim op (list (car es) (Var x))))))]
             [else (Prim op es)])]
+         [(eq? (length es) 3)
+          (cond
+            [(not (atm? (first es)))
+             (let ([x (gensym 'tmp)])
+               (Let x
+                    ((remove-complex-opera-exp env) (first es))
+                    ((remove-complex-opera-exp env) (Prim op (cons (Var x) (cdr es))))))]
+            [(not (atm? (second es)))
+             (let ([x (gensym 'tmp)])
+               (Let x
+                    ((remove-complex-opera-exp env) (second es))
+                    ((remove-complex-opera-exp env) (Prim op (list (first es) (Var x) (last es))))))]
+            [(not (atm? (last es)))
+             (let ([x (gensym 'tmp)])
+               (Let x
+                    ((remove-complex-opera-exp env) (last es))
+                    ((remove-complex-opera-exp env) (Prim op
+                                                          (list (first es) (second es) (Var x))))))]
+            [else (Prim op es)])]
          [else (Prim op es)])]
       [_ e])))
 
@@ -155,6 +241,9 @@
        (let [(loop (gensym 'loop))]
          (set! basic-blocks (cons (cons loop (explicate_pred cnd (explicate-effect body (Goto loop)) (Return (Void)))) basic-blocks))
          (Goto loop))]
+    [(GlobalValue x) (Return (GlobalValue x))]
+    [(Allocate n type) (Return (Allocate n type))]
+    [(Collect n) (Return (Collect n))]
     [else (error "explicate_tail unhandled case" e)])                                 
     )
 
@@ -169,6 +258,10 @@
     [(Begin es body) (explicate-effect (first es) (explicate_assign (Begin (rest es) body) x cont))]
     [(If a b c) (explicate_pred a (explicate_assign b x cont) (explicate_assign c x cont))]
     [(SetBang y rhs) (explicate_assign rhs y (Assign (Var x) (Void)))]
+    [(GlobalValue y) (Seq (Assign (Var x) (GlobalValue y)) cont)]
+    [(Allocate n type) (Seq (Assign (Var x) (Allocate n type)) cont)]
+    [(Collect n) (Seq (Collect n) cont)]
+    [(Void) (Seq (Assign (Var x) (Void)) cont)]
     [(WhileLoop cnd body) 
      (Seq 
        (Assign (Var x) (Void))
@@ -250,21 +343,48 @@
     [(IfStmt (Prim cmp (list (? atm? a) (? atm? b))) (Goto thn) (Goto els))
      #:when (equal? cmp '>=)
      (list (Instr 'cmpq (list (select-atm b) (select-atm a))) (JmpIf 'ge thn) (Jmp els))]))
+
+(define (gen-vector-tag types)
+  (define list-types (match types [`(Vector ,a ...) a]))
+  (define mask 0)
+
+  ;;; (for ([t list-types]) (displayln t))
+  (for ([t list-types] [i (in-range (length list-types))])
+    (let ([tag (if (eq? t 'Vector) 1 0)])
+      (set! mask (bitwise-ior mask (arithmetic-shift tag i)))))
+
+  (displayln mask)
+  (bitwise-ior (bitwise-ior (arithmetic-shift mask 7) (arithmetic-shift (length list-types) 1)) 1)  
+)
+
 (define (select-atm e)
   (match e
     [(Var x) e]
     [(Int x) (Imm x)]
     [(Bool x) (Imm (if x 1 0))]
     [(Void) (Imm 0)]
+    [(GlobalValue x) (Global x)]
   ))
-
 (define (select-stmt e)
   (match e
     [(Prim 'read '()) (list (Callq 'read_int 0))]
+    [(Prim 'vector-set! (list (? atm? tup) (Int n) (? atm? rhs)))
+     (list (Instr 'movq (list (select-atm tup) (Reg 'r11)))
+           (Instr 'movq (list (select-atm rhs) (Deref 'r11 (* 8 (+ n 1))))))]
+    [(Collect bytes)
+     (list (Instr 'movq (list (Reg 'r15) (Reg 'rdi)))
+           (Instr 'movq (list (Imm bytes) (Reg 'rsi)))
+           (Callq 'collect 0))]
     [(Assign x e)
      (if (atm? e)
          (list (Instr 'movq (list (select-atm e) x)))
          (match e
+           [(GlobalValue x^) (list (Instr 'movq (list (Global x^) x)))]
+           [(Allocate n type)
+            (list (Instr 'movq (list (Global 'free_ptr) (Reg 'r11)))
+                  (Instr 'addq (list (Imm (* 8 (+ 1 n))) (Global 'free_ptr)))
+                  (Instr 'movq (list (Imm (gen-vector-tag type)) (Deref 'r11 0)))
+                  (Instr 'movq (list (Reg 'r11) x)))]
            [(Prim 'read '()) (list (Callq 'read_int 0) (Instr 'movq (list (Reg 'rax) x)))]
            [(Prim '- (list a)) (list (Instr 'movq (list (select-atm a) x)) (Instr 'negq (list x)))]
            [(Prim '+ (list a b))
@@ -298,7 +418,23 @@
            [(Prim '>= (list (? atm? a) (? atm? b)))
             (list (Instr 'cmpq (list (select-atm b) (select-atm a)))
                   (Instr 'set (list 'ge (ByteReg 'al)))
-                  (Instr 'movzbq (list (ByteReg 'al) x)))]))]))
+                  (Instr 'movzbq (list (ByteReg 'al) x)))]
+           [(Prim 'vector-ref (list (? atm? tup) (Int n)))
+            (list (Instr 'movq (list (select-atm tup) (Reg 'r11)))
+                  (Instr 'movq (list (Deref 'r11 (* 8 (+ n 1))) x)))]
+           [(Prim 'vector-set! (list (? atm? tup) (Int n) (? atm? rhs)))
+            (list (Instr 'movq (list (select-atm tup) (Reg 'r11)))
+                  (Instr 'movq (list (select-atm rhs) (Deref 'r11 (* 8 (+ n 1)))))
+                  (Instr 'movq (list (Imm 0) x)))]
+           [(Prim 'vector-length (list (? atm? tup)))
+            (list (Instr 'movq (list (select-atm tup) (Reg 'r11)))
+                  (Instr 'movq (list (Deref 'r11 0) (Reg 'rax)))
+                  (Instr 'sarq (list (Imm 1) (Reg 'rax)))
+                  (Instr 'andq (list (Imm 63) (Reg 'rax)))
+                  (Instr 'movq (list (Reg 'rax) x)))]))]))
+
+
+
 
 (define (select-instructions p)
   (match p
@@ -412,7 +548,9 @@
         [(Reg a) (set-add (locations-appear (rest args)) a)]
         [(ByteReg a) (set-add (locations-appear (rest args)) a)]
         [(Var a) (set-add (locations-appear (rest args)) a)]
-        [(Imm a) (locations-appear (rest args))])))
+        [(Imm a) (locations-appear (rest args))]
+        [(Global a) (locations-appear (rest args))]
+        [(Deref a b) (set-add (locations-appear (rest args)) a)])))
 
 (define (locations-read-by-instr instr)
   (match instr
@@ -572,6 +710,7 @@
     [(X86Program info (list (cons label-list (Block block-info-list instrs-list)) ...))
      (define-values (color callee-used)
        (graph-coloring (dict-ref info 'conflicts) (dict-ref info 'locals-types)))
+      (displayln color)
      (X86Program (dict-set (dict-set info 'callee-used (set->list callee-used))
                            'stack-space
                            (* (max 0 (- (max-color color) 10)) 8))
@@ -620,16 +759,20 @@
 (define compiler-passes
   ;; Uncomment the following passes as you finish them.
   `(
-    ("shrink" ,shrink ,interp-Lwhile,type-check-Lwhile)
-    ("uniquify" ,uniquify ,interp-Lwhile, type-check-Lwhile)
-    ("uncover-get!" ,uncover-get!,interp-Lwhile, type-check-Lwhile)
-    ("remove complex opera*" ,remove-complex-opera* ,interp-Lwhile,type-check-Lwhile)
-    ("explicate control" ,explicate-control ,interp-Cwhile,type-check-Cwhile)
-    ("instruction selection" ,select-instructions ,interp-pseudo-x86-1)
-    ("uncover live" ,uncover-live ,interp-x86-1)
-    ("build interference" ,build-interference ,interp-x86-1)
-    ("allocate registers", allocate-registers ,interp-x86-1)
-    ; ("assign homes" ,assign-homes ,interp-x86-0)
-    ("patch instructions" ,patch-instructions ,interp-x86-1)
-    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
+    ("shrink" ,shrink ,interp-Lvec,type-check-Lvec)
+    ("uniquify" ,uniquify ,interp-Lvec, type-check-Lvec)
+    ("uncover-get!" ,uncover-get!,interp-Lvec, type-check-Lvec-has-type)
+    ("expose-allocation" ,expose-allocation ,interp-Lvec-prime, type-check-Lvec)
+    ;;; ("shrink" ,shrink ,interp-Lwhile,type-check-Lwhile)
+    ;;; ("uniquify" ,uniquify ,interp-Lwhile, type-check-Lwhile)
+    ;;; ("uncover-get!" ,uncover-get!,interp-Lwhile, type-check-Lwhile)
+    ("remove complex opera*" ,remove-complex-opera* ,interp-Lvec-prime,type-check-Lvec)
+    ("explicate control" ,explicate-control ,interp-Cvec,type-check-Cvec)
+    ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
+    ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
+    ("build interference" ,build-interference ,interp-pseudo-x86-2)
+    ("allocate registers", allocate-registers ,interp-pseudo-x86-2)
+    ;;; ; ("assign homes" ,assign-homes ,interp-x86-0)
+    ;;; ("patch instructions" ,patch-instructions ,interp-x86-1)
+    ;;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
     ))
