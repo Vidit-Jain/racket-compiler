@@ -536,7 +536,7 @@
                                         (Instr 'movq (list (Imm 65536) (Reg 'rdi)))
                                         (Instr 'movq (list (Imm 65536) (Reg 'rsi)))
                                         (Callq 'initialize 2)
-                                        (Instr 'movq (list (Global 'rootstack-begin) (Reg 'r15)))
+                                        (Instr 'movq (list (Global 'rootstack_begin) (Reg 'r15)))
                                         (Instr 'movq (list (Imm 0) (Deref 'r15 0)))
                                         (Instr 'addq
                                                (list (Imm (dict-ref info 'root-stack-space))
@@ -693,7 +693,8 @@
              [(set-member? (set-union callee-saved caller-saved) var)(append (temp (set (decompose var)) caller-saved) prev)]
              [else 
               (match (dict-ref locals-types var)
-                ['(Vector ,a ...)
+                [`(Vector ,a ...)
+                  (println "Found vector")
                  (append (temp (set (decompose var)) (set-union callee-saved caller-saved)) prev)]
                 [else (append (temp (set (decompose var)) caller-saved) prev)])]))
          '()
@@ -737,6 +738,8 @@
 
 (define stack-spills 0)
 (define root-stack-spills 0)
+(define root-stack-assignment (make-hash))
+(define stack-assignment (make-hash))
 
 (define (allocate-reg reg color locals-types)
   (match reg
@@ -744,12 +747,31 @@
      (let ([num (dict-ref color a)])
        (if (>= num 11)
            (match (dict-ref locals-types a)
-            ;;;  ['(Vector ,a ...) (Deref 'r15 (- (calc-offset num)))]
-            ;;;  [_ (Deref 'rbp (calc-offset num))])
-            ['(Vector ,a ...) (set! root-stack-spills (+ 1 root-stack-spills)) (Deref 'r15 (* 8 (- root-stack-spills 1)))]
-            [_ (set! stack-spills (+ 1 stack-spills)) (Deref 'rbp (* 8 (- stack-spills)))])
+             ;;;  ['(Vector ,a ...) (Deref 'r15 (- (calc-offset num)))]
+             ;;;  [_ (Deref 'rbp (calc-offset num))])
+             [`(Vector ,a^ ...)
+              (let ([root-offset (cond
+                                   [(not (dict-has-key? root-stack-assignment a))
+                                    (set! root-stack-spills (+ 1 root-stack-spills))
+                                    (dict-set! root-stack-assignment a (- root-stack-spills 1))
+                                    (dict-ref root-stack-assignment a)]
+                                   [else (dict-ref root-stack-assignment a)])])
+                (print "Assigning root stack offset: ") (print a) (print " ") (println root-offset)
+                (Deref 'r15 (* 8 root-offset)))]
+             [_
+              (let ([stack-offset (cond
+                                    [(not (dict-has-key? stack-assignment a))
+                                     (set! stack-spills (+ 1 stack-spills))
+                                     (dict-set! stack-assignment a (- stack-spills))
+                                     (dict-ref stack-assignment a)]
+                                    [else (dict-ref stack-assignment a)])])
+                (print "Assigning stack offset: ") (print a) (print " ") (println stack-offset)
+                (Deref 'rbp (* 8 stack-offset)))])
            (Reg (color->register (dict-ref color a)))))]
     [_ reg]))
+
+
+
 
 (define (allocate-instr instr color locals-types)
   (match instr
@@ -766,23 +788,29 @@
 (define (allocate-registers p)
   ;;; (set! stack-spills 0)
   ;;; (set! root-stack-spills 0)
+
   (match p
     [(X86Program info (list (cons label-list (Block block-info-list instrs-list)) ...))
      (define-values (color callee-used)
        (graph-coloring (dict-ref info 'conflicts) (dict-ref info 'locals-types)))
-      (displayln color)
-     (X86Program (dict-set (dict-set (dict-set info 'callee-used (set->list callee-used))
-                           'stack-space
-                          ;;;  (* (max 0 (- (max-color color) 10)) 8)
-                           (* 8 stack-spills)) 'root-stack-space (* 8 root-stack-spills))
-                 (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
-                   (cons label (Block block-info (allocate-block instrs color (dict-ref info 'locals-types))))))]))
+     (let ([new-blocks
+            (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
+              (cons label
+                    (Block block-info (allocate-block instrs color (dict-ref info 'locals-types)))))])
+       (X86Program (dict-set (dict-set (dict-set info 'callee-used (set->list callee-used))
+                                       'stack-space
+                                       ;;;  (* (max 0 (- (max-color color) 10)) 8)
+                                       (* 8 stack-spills))
+                             'root-stack-space
+                             (* 8 root-stack-spills))
+                   new-blocks))]))
+
 
 (define (max-color ls)
   (foldl (lambda (a b) (max (cdr a) b)) 0 ls))
 
 (define (graph-coloring graph var-list)
-  (displayln (stream->list (in-edges graph)))
+  ;;; (displayln (stream->list (in-edges graph)))
   (define color (make-hash))
   (define pq-handle (make-hash))
   (define used (make-hash))
@@ -833,8 +861,8 @@
     ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
     ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
     ("build interference" ,build-interference ,interp-pseudo-x86-2)
-    ("allocate registers", allocate-registers ,interp-pseudo-x86-2)
+    ("allocate registers", allocate-registers ,#f)
     ;;; ; ("assign homes" ,assign-homes ,interp-x86-0)
-    ("patch instructions" ,patch-instructions ,interp-pseudo-x86-2)
-    ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-pseudo-x86-2)
+    ("patch instructions" ,patch-instructions ,#f)
+    ("prelude-and-conclusion" ,prelude-and-conclusion ,#f)
     ))
