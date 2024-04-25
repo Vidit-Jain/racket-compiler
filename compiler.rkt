@@ -5,17 +5,20 @@
          data/queue)
 (require racket/fixnum)
 (require "interp-Lint.rkt")
+(require "interp-Lfun.rkt")
 (require "interp-Lvar.rkt")
 (require "interp-Lif.rkt")
 (require "interp-Lwhile.rkt")
 (require "interp-Cwhile.rkt")
 (require "interp-Cvar.rkt")
+(require "interp-Cfun.rkt")
 (require "interp-Cif.rkt")
 (require "interp-Lvec.rkt")
 (require "interp-Lvec-prime.rkt")
 (require "interp-Cvec.rkt")
 
 (require "type-check-Lvec.rkt")
+(require "type-check-Lfun.rkt")
 (require "type-check-Lvar.rkt")
 (require "type-check-Lwhile.rkt")
 (require "type-check-Cvar.rkt")
@@ -31,12 +34,16 @@
 (provide (all-defined-out))
 
 (define (uniquify-exp env)
+  ; (println "hello")
+  ; (println (dict-implements? env 'dict-set!))
   (lambda (e)
     (match e
+	  [(Apply f c) (Apply ((uniquify-exp env) f) (map (uniquify-exp env) c))]
       [(Var x) (Var (dict-ref env x))]
       [(If a b c) (If ((uniquify-exp env) a) ((uniquify-exp env) b) ((uniquify-exp env) c))]
       [(Let x e body)
-       (let ([sub-env (dict-set env x (gensym x))])
+       (let ([sub-env (dict-copy env)])
+		 (dict-set! sub-env x (gensym x))
          (Let (dict-ref sub-env x) ((uniquify-exp env) e) ((uniquify-exp sub-env) body)))]
       [(SetBang x exp) (SetBang (dict-ref env x) ((uniquify-exp env) exp))]
       [(Begin es body) (Begin (for/list ([e es])
@@ -48,10 +55,34 @@
                ((uniquify-exp env) e)))]
       [_ e])))
 
-; uniquify : Lvar -> Lvar
+(define (extract-var var)
+  (match var
+	[(quasiquote [,var : ,type]) var]
+	)
+  )
+
+
+(define (uniquify-fun env)
+  (lambda (fun)
+	(match fun
+	  [(Def f param type info exp)
+	   (let [(sub-env (dict-copy env))]
+		(for [(p param)]
+		  (dict-set! sub-env (extract-var p) (gensym (extract-var p))))
+		(println sub-env)
+		(Def (dict-ref env f) (for/list [(p param)]
+							   (match p [(quasiquote [,var : ,type]) `[,(dict-ref sub-env var) : ,type]]))
+			 type info ((uniquify-exp sub-env) exp))
+		 )])))
+  
+
 (define (uniquify p)
   (match p
-    [(Program info e) (Program info ((uniquify-exp '()) e))]))
+    [(ProgramDefs info defs) 
+	 (let [(env (make-hash))]
+	   (for [(def defs)]
+		 (match def [(Def f param type info exp) (dict-set! env f (if (equal? f 'main) f (gensym f)))]))
+	   (ProgramDefs info (map (uniquify-fun env) defs)))]))
 
 
 (define (shrink-exp e)
@@ -72,7 +103,11 @@
 
 (define (shrink p)
   (match p
-    [(Program info e) (Program info (shrink-exp e))]))
+    [(ProgramDefsExp info defs exp) 
+	 (ProgramDefs info 
+		(append (for/list ([def defs])
+				  (match def [(Def f param type info exp) (Def f param type info (shrink-exp exp))]))
+				(list (Def 'main '() 'Integer '() (shrink-exp exp)))))]))
 
 (define (collect-set! e)
   (match e
@@ -849,20 +884,20 @@
 (define compiler-passes
   ;; Uncomment the following passes as you finish them.
   `(
-    ("shrink" ,shrink ,interp-Lvec,type-check-Lvec)
-    ("uniquify" ,uniquify ,interp-Lvec, type-check-Lvec)
-    ("uncover-get!" ,uncover-get!,interp-Lvec, type-check-Lvec-has-type)
-    ("expose-allocation" ,expose-allocation ,interp-Lvec-prime, type-check-Lvec)
-    ;;; ("shrink" ,shrink ,interp-Lwhile,type-check-Lwhile)
-    ;;; ("uniquify" ,uniquify ,interp-Lwhile, type-check-Lwhile)
-    ;;; ("uncover-get!" ,uncover-get!,interp-Lwhile, type-check-Lwhile)
-    ("remove complex opera*" ,remove-complex-opera* ,interp-Lvec-prime,type-check-Lvec)
-    ("explicate control" ,explicate-control ,interp-Cvec,type-check-Cvec)
-    ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
-    ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
-    ("build interference" ,build-interference ,interp-pseudo-x86-2)
-    ("allocate registers", allocate-registers ,#f)
-    ;;; ; ("assign homes" ,assign-homes ,interp-x86-0)
-    ("patch instructions" ,patch-instructions ,#f)
-    ("prelude-and-conclusion" ,prelude-and-conclusion ,#f)
+    ("shrink" ,shrink ,interp-Lfun,type-check-Lfun)
+    ("uniquify" ,uniquify ,interp-Lfun, type-check-Lfun)
+    ; ("uncover-get!" ,uncover-get!,interp-Lvec, type-check-Lvec-has-type)
+    ; ("expose-allocation" ,expose-allocation ,interp-Lvec-prime, type-check-Lvec)
+    ; ;;; ("shrink" ,shrink ,interp-Lwhile,type-check-Lwhile)
+    ; ;;; ("uniquify" ,uniquify ,interp-Lwhile, type-check-Lwhile)
+    ; ;;; ("uncover-get!" ,uncover-get!,interp-Lwhile, type-check-Lwhile)
+    ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvec-prime,type-check-Lvec)
+    ; ("explicate control" ,explicate-control ,interp-Cvec,type-check-Cvec)
+    ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
+    ; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
+    ; ("build interference" ,build-interference ,interp-pseudo-x86-2)
+    ; ("allocate registers", allocate-registers ,#f)
+    ; ;;; ; ("assign homes" ,assign-homes ,interp-x86-0)
+    ; ("patch instructions" ,patch-instructions ,#f)
+    ; ("prelude-and-conclusion" ,prelude-and-conclusion ,#f)
     ))
