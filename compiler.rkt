@@ -6,6 +6,7 @@
 (require racket/fixnum)
 (require "interp-Lint.rkt")
 (require "interp-Lfun.rkt")
+(require "interp-Lfun-prime.rkt")
 (require "interp-Lvar.rkt")
 (require "interp-Lif.rkt")
 (require "interp-Lwhile.rkt")
@@ -34,8 +35,6 @@
 (provide (all-defined-out))
 
 (define (uniquify-exp env)
-  ; (println "hello")
-  ; (println (dict-implements? env 'dict-set!))
   (lambda (e)
     (match e
 	  [(Apply f c) (Apply ((uniquify-exp env) f) (map (uniquify-exp env) c))]
@@ -108,6 +107,33 @@
 		(append (for/list ([def defs])
 				  (match def [(Def f param type info exp) (Def f param type info (shrink-exp exp))]))
 				(list (Def 'main '() 'Integer '() (shrink-exp exp)))))]))
+		
+(define (reveal-functions-exp e)
+	(match e
+	  [(Apply (Var f) c) (Apply (FunRef f (length c)) (map reveal-functions-exp c))]
+	  [(Var x) e]
+	  [(If a b c) (If (reveal-functions-exp a) (reveal-functions-exp b) (reveal-functions-exp c))]
+	  [(Let x e body)
+	   (Let x (reveal-functions-exp e) (reveal-functions-exp body))]
+	  [(SetBang x exp) (SetBang x (reveal-functions-exp exp))]
+	  [(Begin es body) (Begin (for/list ([e es])
+				  (reveal-functions-exp e)) (reveal-functions-exp body))]
+	  [(WhileLoop exp1 exp2) (WhileLoop (reveal-functions-exp exp1) (reveal-functions-exp exp2))]
+	  [(Prim op es)
+	   (Prim op
+			 (for/list ([e es])
+			   (reveal-functions-exp e)))]
+	  [_ e]))
+
+(define (reveal-functions-def def)
+  (match def
+	[(Def f param type info exp)
+	 (Def f param type info (reveal-functions-exp exp))]))
+
+(define (reveal-functions p)
+	(match p
+		[(ProgramDefs info defs)
+			(ProgramDefs info (map reveal-functions-def defs))]))
 
 (define (collect-set! e)
   (match e
@@ -886,6 +912,7 @@
   `(
     ("shrink" ,shrink ,interp-Lfun,type-check-Lfun)
     ("uniquify" ,uniquify ,interp-Lfun, type-check-Lfun)
+    ("reveal functions" ,reveal-functions,interp-Lfun-prime, type-check-Lfun)
     ; ("uncover-get!" ,uncover-get!,interp-Lvec, type-check-Lvec-has-type)
     ; ("expose-allocation" ,expose-allocation ,interp-Lvec-prime, type-check-Lvec)
     ; ;;; ("shrink" ,shrink ,interp-Lwhile,type-check-Lwhile)
