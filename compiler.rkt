@@ -246,46 +246,41 @@
       [(Let x e body)
        (Let x ((remove-complex-opera-exp env) e) ((remove-complex-opera-exp env) body))]
       [(Prim op es)
-       (cond
-         [(eq? (length es) 1)
-          (if (atm? (first es))
-              (Prim op es)
-              (let ([x (gensym 'tmp)])
-                (Let x ((remove-complex-opera-exp env) (first es)) (Prim op (list (Var x))))))]
-         [(eq? (length es) 2)
-          (cond
-            [(not (atm? (first es)))
-             (let ([x (gensym 'tmp)])
-               (Let x
-                    ((remove-complex-opera-exp env) (first es))
-                    ((remove-complex-opera-exp env) (Prim op (cons (Var x) (cdr es))))))]
-            [(not (atm? (last es)))
-             (let ([x (gensym 'tmp)])
-               (Let x
-                    ((remove-complex-opera-exp env) (last es))
-                    ((remove-complex-opera-exp env) (Prim op (list (car es) (Var x))))))]
-            [else (Prim op es)])]
-         [(eq? (length es) 3)
-          (cond
-            [(not (atm? (first es)))
-             (let ([x (gensym 'tmp)])
-               (Let x
-                    ((remove-complex-opera-exp env) (first es))
-                    ((remove-complex-opera-exp env) (Prim op (cons (Var x) (cdr es))))))]
-            [(not (atm? (second es)))
-             (let ([x (gensym 'tmp)])
-               (Let x
-                    ((remove-complex-opera-exp env) (second es))
-                    ((remove-complex-opera-exp env) (Prim op (list (first es) (Var x) (last es))))))]
-            [(not (atm? (last es)))
-             (let ([x (gensym 'tmp)])
-               (Let x
-                    ((remove-complex-opera-exp env) (last es))
-                    ((remove-complex-opera-exp env) (Prim op
-                                                          (list (first es) (second es) (Var x))))))]
-            [else (Prim op es)])]
-         [else (Prim op es)])]
+       (rco_helper (Prim op es) env '() es)]
+      [(Def f params ret-type info exp)
+       (Def f params ret-type info ((remove-complex-opera-exp env) exp))]
+      [(Apply f c) (rco_helper (Apply f c) env '() c)]
       [_ e])))
+
+(define (rco_helper exp rco-env env operands)
+  (match exp
+    [(Prim op es)
+     (if (empty? operands)
+         (Prim op
+               (for/list ([e es])
+                 (dict-ref env e)))
+         (match (first operands)
+           [(? atm? op) (rco_helper exp rco-env (dict-set env op op) (rest operands))]
+           [op
+            (let ([x (gensym 'tmp)])
+              (Let x ((remove-complex-opera-exp rco-env) op) (rco_helper exp rco-env (dict-set env op (Var x)) (rest operands))))]))]
+    [(Apply f c)
+     (if (empty? operands)
+         (Apply f
+                (for/list ([e c])
+                  (dict-ref env e)))
+         (match (first operands)
+           [(? atm? f) (rco_helper exp rco-env (dict-set env f f) (rest operands))]
+           [f
+            (let ([x (gensym 'tmp)])
+              (Let x ((remove-complex-opera-exp rco-env) f) (rco_helper exp rco-env (dict-set env f (Var x)) (rest operands))))]))]
+    [_ (error "rco_helper unhandled case" exp)]))
+
+;; remove-complex-opera* : Lvar -> Lvar^mon
+(define (remove-complex-opera* p)
+  (match p
+    [(ProgramDefs info defs) (ProgramDefs info (for/list ([def defs]) ((remove-complex-opera-exp (make-hash)) def)))]))
+    ;;; [(Program info e) (Program info ((remove-complex-opera-exp '()) e))]))
 
 (define (explicate_tail e)
   (match e
@@ -375,11 +370,6 @@
      (let ([label (gensym 'block)])
        (set! basic-blocks (cons (cons label tail) basic-blocks))
        (Goto label))]))
-
-;; remove-complex-opera* : Lvar -> Lvar^mon
-(define (remove-complex-opera* p)
-  (match p
-    [(Program info e) (Program info ((remove-complex-opera-exp '()) e))]))
 
 ;; explicate-control : Lvar^mon -> Cvar
 (define (explicate-control p)
@@ -907,24 +897,42 @@
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
+
 (define compiler-passes
   ;; Uncomment the following passes as you finish them.
   `(
     ("shrink" ,shrink ,interp-Lfun,type-check-Lfun)
     ("uniquify" ,uniquify ,interp-Lfun, type-check-Lfun)
-    ("reveal functions" ,reveal-functions,interp-Lfun-prime, type-check-Lfun)
-    ; ("uncover-get!" ,uncover-get!,interp-Lvec, type-check-Lvec-has-type)
-    ; ("expose-allocation" ,expose-allocation ,interp-Lvec-prime, type-check-Lvec)
-    ; ;;; ("shrink" ,shrink ,interp-Lwhile,type-check-Lwhile)
-    ; ;;; ("uniquify" ,uniquify ,interp-Lwhile, type-check-Lwhile)
-    ; ;;; ("uncover-get!" ,uncover-get!,interp-Lwhile, type-check-Lwhile)
-    ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvec-prime,type-check-Lvec)
-    ; ("explicate control" ,explicate-control ,interp-Cvec,type-check-Cvec)
-    ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
-    ; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
-    ; ("build interference" ,build-interference ,interp-pseudo-x86-2)
-    ; ("allocate registers", allocate-registers ,#f)
-    ; ;;; ; ("assign homes" ,assign-homes ,interp-x86-0)
-    ; ("patch instructions" ,patch-instructions ,#f)
-    ; ("prelude-and-conclusion" ,prelude-and-conclusion ,#f)
+    ;;; ("uncover-get!" ,uncover-get!,interp-Lfun, type-check-Lfun)
+    ;;; ("expose-allocation" ,expose-allocation ,interp-Lfun, type-check-Lfun)
+    ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun,type-check-Lfun)
+    ;;; ("explicate control" ,explicate-control ,interp-Cvec,type-check-Cvec)
+    ;;; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
+    ;;; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
+    ;;; ("build interference" ,build-interference ,interp-pseudo-x86-2)
+    ;;; ("allocate registers", allocate-registers ,#f)
+    ;;; ("patch instructions" ,patch-instructions ,#f)
+    ;;; ("prelude-and-conclusion" ,prelude-and-conclusion ,#f)
     ))
+
+;;; (define compiler-passes
+;;;   ;; Uncomment the following passes as you finish them.
+;;;   `(
+;;;     ("shrink" ,shrink ,interp-Lfun,type-check-Lfun)
+;;;     ("uniquify" ,uniquify ,interp-Lfun, type-check-Lfun)
+;;;     ("reveal functions" ,reveal-functions,interp-Lfun-prime, type-check-Lfun)
+;;;     ; ("uncover-get!" ,uncover-get!,interp-Lvec, type-check-Lvec-has-type)
+;;;     ; ("expose-allocation" ,expose-allocation ,interp-Lvec-prime, type-check-Lvec)
+;;;     ; ;;; ("shrink" ,shrink ,interp-Lwhile,type-check-Lwhile)
+;;;     ; ;;; ("uniquify" ,uniquify ,interp-Lwhile, type-check-Lwhile)
+;;;     ; ;;; ("uncover-get!" ,uncover-get!,interp-Lwhile, type-check-Lwhile)
+;;;     ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvec-prime,type-check-Lvec)
+;;;     ; ("explicate control" ,explicate-control ,interp-Cvec,type-check-Cvec)
+;;;     ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
+;;;     ; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
+;;;     ; ("build interference" ,build-interference ,interp-pseudo-x86-2)
+;;;     ; ("allocate registers", allocate-registers ,#f)
+;;;     ; ;;; ; ("assign homes" ,assign-homes ,interp-x86-0)
+;;;     ; ("patch instructions" ,patch-instructions ,#f)
+;;;     ; ("prelude-and-conclusion" ,prelude-and-conclusion ,#f)
+;;;     ))
