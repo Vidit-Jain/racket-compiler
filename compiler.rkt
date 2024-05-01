@@ -106,7 +106,8 @@
 	 (ProgramDefs info 
 		(append (for/list ([def defs])
 				  (match def [(Def f param type info exp) (Def f param type info (shrink-exp exp))]))
-				(list (Def 'main '() 'Integer '() (shrink-exp exp)))))]))
+				(list (Def 'main '() 'Integer '() (shrink-exp exp)))))]
+	))
 		
 (define (reveal-functions-exp e)
 	(match e
@@ -266,9 +267,11 @@
               (Let x ((remove-complex-opera-exp rco-env) op) (rco_helper exp rco-env (dict-set env op (Var x)) (rest operands))))]))]
     [(Apply f c)
      (if (empty? operands)
-         (Apply f
-                (for/list ([e c])
-                  (dict-ref env e)))
+       (let ([fun (gensym 'fun)])
+         (Let fun f 
+                    (Apply (Var fun)
+                    (for/list ([e c])
+                      (dict-ref env e)))))
          (match (first operands)
            [(? atm? f) (rco_helper exp rco-env (dict-set env f f) (rest operands))]
            [f
@@ -903,9 +906,10 @@
   `(
     ("shrink" ,shrink ,interp-Lfun,type-check-Lfun)
     ("uniquify" ,uniquify ,interp-Lfun, type-check-Lfun)
+    ("reveal functions" ,reveal-functions,interp-Lfun-prime, type-check-Lfun)
     ;;; ("uncover-get!" ,uncover-get!,interp-Lfun, type-check-Lfun)
     ;;; ("expose-allocation" ,expose-allocation ,interp-Lfun, type-check-Lfun)
-    ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun,type-check-Lfun)
+    ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun-prime,type-check-Lfun)
     ;;; ("explicate control" ,explicate-control ,interp-Cvec,type-check-Cvec)
     ;;; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
     ;;; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
