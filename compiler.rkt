@@ -23,6 +23,7 @@
 (require "type-check-Lvar.rkt")
 (require "type-check-Lwhile.rkt")
 (require "type-check-Cvar.rkt")
+(require "type-check-Cfun.rkt")
 (require "type-check-Lif.rkt")
 (require "type-check-Cif.rkt")
 (require "type-check-Cwhile.rkt")
@@ -161,19 +162,26 @@
     [(Begin es body) (Begin (for/list ([e es])
                 ((uncover-get!-exp set!-vars) e)) ((uncover-get!-exp set!-vars) body))]
     [(WhileLoop exp1 exp2) (WhileLoop ((uncover-get!-exp set!-vars) exp1) ((uncover-get!-exp set!-vars) exp2))]
+    [(Apply f es) (Apply f (for/list ([e es]) ((uncover-get!-exp set!-vars) e)))]
     [(Prim op es)
      (Prim op
            (for/list ([e es])
              ((uncover-get!-exp set!-vars) e)))]
   [_ e]))
+(define (uncover-get!-def def)
+  (match def
+     [(Def f params ret-type info exp) (Def f params ret-type info ((uncover-get!-exp (collect-set! exp)) exp))]))
 
 (define (uncover-get! p)
   (match p
-    [(Program info e) (Program info ((uncover-get!-exp (collect-set! e)) e))]))
+    [(ProgramDefs info defs) (ProgramDefs info (map uncover-get!-def defs))]))
 
+(define (expose-allocation-def def)
+  (match def
+     [(Def f params ret-type info exp) (Def f params ret-type info ((expose-allocation-exp '()) exp))]))
 (define (expose-allocation p)
   (match p
-    [(Program info e) (Program info ((expose-allocation-exp '()) e))]))
+    [(ProgramDefs info defs) (ProgramDefs info (map expose-allocation-def defs))]))
 
 (define (gen-tuple-init temp-vars-list vector-name index)
   (if (empty? temp-vars-list)
@@ -217,6 +225,7 @@
               ((expose-allocation-exp env) body))]
       [(WhileLoop exp1 exp2)
        (WhileLoop ((expose-allocation-exp env) exp1) ((expose-allocation-exp env) exp2))]
+      [(Apply f es) (Apply f (for/list ([e es]) ((expose-allocation-exp env) e)))]
       [(Prim op es)
        (Prim op
              (for/list ([e es])
@@ -303,6 +312,8 @@
     [(GlobalValue x) (Return (GlobalValue x))]
     [(Allocate n type) (Return (Allocate n type))]
     [(Collect n) (Return (Collect n))]
+    [(Apply f es) (TailCall f es)]
+    [(FunRef f n) (Return (FunRef f n))]
     [_ (error "explicate_tail unhandled case" e)])                                 
     )
 
@@ -319,6 +330,8 @@
     [(SetBang y rhs) (explicate_assign rhs y (Assign (Var x) (Void)))]
     [(GlobalValue y) (Seq (Assign (Var x) (GlobalValue y)) cont)]
     [(Allocate n type) (Seq (Assign (Var x) (Allocate n type)) cont)]
+    [(Apply f es) (Seq (Assign (Var x) (Call f es)) cont)]
+    [(FunRef f n) (Seq (Assign (Var x) (FunRef f n)) cont)]
     [(Collect n) (Seq (Collect n) cont)]
     [(Void) (Seq (Assign (Var x) (Void)) cont)]
     [(WhileLoop cnd body) 
@@ -333,6 +346,7 @@
   (match cnd
     [(Var x) (IfStmt (Prim 'eq? (list (Var x) (Bool #t))) (create_block thn) (create_block els))]
     [(Let x rhs body) (explicate_assign rhs x (explicate_pred body thn els))]
+    [(Apply f es) (IfStmt (Prim 'eq? (list (Call f es) (Bool #t))) (create_block thn) (create_block els))]
     [(Prim 'not (list e))
      (IfStmt (Prim 'eq? (list e (Bool #t))) (create_block els) (create_block thn))]
     [(Prim op es)
@@ -359,6 +373,9 @@
      )]
     [(Let x rhs body) (explicate_assign rhs x (explicate-effect body cont))]
     [(If cnd thn els) (explicate_pred cnd (explicate-effect thn cont) (explicate-effect els cont))]
+    [(Prim 'vector-set! (list a b c)) (Seq e cont)]
+    [(Collect n) (Seq (Collect n) cont)]
+    [(Apply f es) (Seq (Call f es) cont)]
     [_ cont]
   )
 )
@@ -374,11 +391,19 @@
        (set! basic-blocks (cons (cons label tail) basic-blocks))
        (Goto label))]))
 
+(define (explicate-def def)
+  (set! basic-blocks '())
+	(match def
+	  [(Def f param type info exp) 
+     (set! basic-blocks (cons (cons (symbol-append f '_start) (explicate_tail exp)) basic-blocks))
+     (Def f param type info basic-blocks)]
+	  )
+  )
 ;; explicate-control : Lvar^mon -> Cvar
 (define (explicate-control p)
   (set! basic-blocks '())
   (match p
-    [(Program info e) (CProgram info (cons (cons 'start (explicate_tail e)) basic-blocks))]))
+    [(ProgramDefs info defs) (ProgramDefs info (map explicate-def defs))]))
 
 (define (select-tail e)
   (match e
@@ -907,10 +932,10 @@
     ("shrink" ,shrink ,interp-Lfun,type-check-Lfun)
     ("uniquify" ,uniquify ,interp-Lfun, type-check-Lfun)
     ("reveal functions" ,reveal-functions,interp-Lfun-prime, type-check-Lfun)
-    ;;; ("uncover-get!" ,uncover-get!,interp-Lfun, type-check-Lfun)
-    ;;; ("expose-allocation" ,expose-allocation ,interp-Lfun, type-check-Lfun)
+    ("expose-allocation" ,expose-allocation ,interp-Lfun-prime, type-check-Lfun)
+    ("uncover-get!" ,uncover-get!,interp-Lfun-prime, type-check-Lfun)
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun-prime,type-check-Lfun)
-    ;;; ("explicate control" ,explicate-control ,interp-Cvec,type-check-Cvec)
+    ("explicate control" ,explicate-control ,interp-Cfun,type-check-Cfun)
     ;;; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
     ;;; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
     ;;; ("build interference" ,build-interference ,interp-pseudo-x86-2)
