@@ -110,32 +110,42 @@
 				(list (Def 'main '() 'Integer '() (shrink-exp exp)))))]
 	))
 		
-(define (reveal-functions-exp e)
+(define ((reveal-functions-exp f-arity-map) e)
 	(match e
-	  [(Apply (Var f) c) (Apply (FunRef f (length c)) (map reveal-functions-exp c))]
-	  [(Var x) e]
-	  [(If a b c) (If (reveal-functions-exp a) (reveal-functions-exp b) (reveal-functions-exp c))]
+	  [(Apply (Var f) c) (Apply (if (dict-has-key? f-arity-map f) (FunRef f (length c)) (Var f)) (map (reveal-functions-exp f-arity-map) c))]
+	  [(Var x) (if (dict-has-key? f-arity-map x) (FunRef x (dict-ref f-arity-map x)) e)]
+	  [(If a b c) (If ((reveal-functions-exp f-arity-map) a) ((reveal-functions-exp f-arity-map) b) ((reveal-functions-exp f-arity-map) c))]
 	  [(Let x e body)
-	   (Let x (reveal-functions-exp e) (reveal-functions-exp body))]
-	  [(SetBang x exp) (SetBang x (reveal-functions-exp exp))]
+	   (Let x ((reveal-functions-exp f-arity-map) e) ((reveal-functions-exp f-arity-map) body))]
+	  [(SetBang x exp) (SetBang x ((reveal-functions-exp f-arity-map) exp))]
 	  [(Begin es body) (Begin (for/list ([e es])
-				  (reveal-functions-exp e)) (reveal-functions-exp body))]
-	  [(WhileLoop exp1 exp2) (WhileLoop (reveal-functions-exp exp1) (reveal-functions-exp exp2))]
+				  ((reveal-functions-exp f-arity-map) e)) ((reveal-functions-exp f-arity-map) body))]
+	  [(WhileLoop exp1 exp2) (WhileLoop ((reveal-functions-exp f-arity-map) exp1) ((reveal-functions-exp f-arity-map) exp2))]
 	  [(Prim op es)
 	   (Prim op
 			 (for/list ([e es])
-			   (reveal-functions-exp e)))]
+			   ((reveal-functions-exp f-arity-map) e)))]
 	  [_ e]))
 
-(define (reveal-functions-def def)
+(define (reveal-functions-def def f-arity-map)
   (match def
 	[(Def f param type info exp)
-	 (Def f param type info (reveal-functions-exp exp))]))
+	 (Def f param type info ((reveal-functions-exp f-arity-map) exp))]))
 
 (define (reveal-functions p)
-	(match p
-		[(ProgramDefs info defs)
-			(ProgramDefs info (map reveal-functions-def defs))]))
+  (let ([dicty (make-hash)])
+    (match p
+      [(ProgramDefs info defs)
+        (match defs
+          [(list (Def f-list param-list _ _ _) ...)
+           (for/list ([f f-list]
+             [p param-list])
+             (dict-set! dicty f (length p)))])
+        (ProgramDefs info (map (curryr reveal-functions-def dicty) defs))])))
+
+
+
+
 
 (define (collect-set! e)
   (match e
@@ -211,6 +221,7 @@
     [(Bool _) exp]
     [(Void) exp]
     [(Var x) (if (dict-has-key? tuple-param-map x) (dict-ref tuple-param-map x) exp)]
+    [(FunRef f n) (if (dict-has-key? tuple-param-map f) (dict-ref tuple-param-map f) exp)]
     [(Prim op es)
      (Prim op
            (for/list ([e es])
@@ -830,7 +841,6 @@
 (define (uncover-live-instrs instrs init-live-after)
   (foldr
    (lambda (instr acc)
-     (displayln acc)
      (match instr
        [(JmpIf _ label) (cons (set-union (dict-ref live-before-label label) (first acc)) acc)]
        [(Jmp label) 
@@ -942,6 +952,9 @@
         (append (temp (set (decompose arg2)) (set-subtract live-after (set (decompose arg1)))) prev)]
        [(Callq 'collect _) (collect-edges-live-after live-after locals-types)]
        [(IndirectCallq arg int) (collect-edges-live-after live-after locals-types)]
+       [(Instr 'leaq (list arg1 arg2)) (print "LEAQ") (println (locations-write-by-instr instr)) (println live-after) (println (temp (locations-write-by-instr instr) live-after))
+        (append (temp (locations-write-by-instr instr) live-after) prev)
+       ]
        [_ (append (temp (locations-write-by-instr instr) live-after) prev)]))
    '()
    instrs
@@ -1036,6 +1049,7 @@
 	[(Def f param type info (list (cons label-list (Block block-info-list instrs-list)) ...)) 
      (define-values (color callee-used)
        (graph-coloring (dict-ref info 'conflicts) (dict-ref info 'locals-types)))
+      ;;;  (println color)
        (let ([new-blocks
               (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
                 (cons label
@@ -1049,23 +1063,6 @@
 (define (allocate-registers p)
   (match p
     [(X86ProgramDefs info defs) (X86ProgramDefs info (map allocate-def defs))]))
-
-; (define (allocate-registers p)
-;   (match p
-;     [(X86ProgramDefs info (list (cons label-list (Block block-info-list instrs-list)) ...))
-;      (define-values (color callee-used)
-;        (graph-coloring (dict-ref info 'conflicts) (dict-ref info 'locals-types)))
-;      (let ([new-blocks
-;             (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
-;               (cons label
-;                     (Block block-info (allocate-block instrs color (dict-ref info 'locals-types)))))])
-;        (X86ProgramDefs (dict-set (dict-set (dict-set info 'callee-used (set->list callee-used))
-;                                        'stack-space
-;                                        (* 8 stack-spills))
-;                              'root-stack-space
-;                              (* 8 root-stack-spills))
-;                    new-blocks))
-; 	 ]))
 
 
 (define (max-color ls)
