@@ -887,6 +887,7 @@ arg-registers
        [(Instr 'movzbq (list arg1 arg2))
         (append (temp (set (decompose arg2)) (set-subtract live-after (set (decompose arg1)))) prev)]
        [(Callq 'collect _) (collect-edges-live-after live-after locals-types)]
+       [(IndirectCallq arg int) (collect-edges-live-after live-after locals-types)]
        [_ (append (temp (locations-write-by-instr instr) live-after) prev)]))
    '()
    instrs
