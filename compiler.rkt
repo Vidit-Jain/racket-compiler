@@ -176,6 +176,81 @@
   (match p
     [(ProgramDefs info defs) (ProgramDefs info (map uncover-get!-def defs))]))
 
+(define (limit-functions p)
+  (match p
+    [(ProgramDefs info defs) (ProgramDefs info (for/list ([def defs]) (limit-functions-def def)))])
+)
+
+(define (limit-functions-def def)
+  (match def
+    [(Def f params ret-type info body)
+     (let ([extra-param-tup (gensym 'tup)] [param-tup-map (make-hash)])
+       (cond
+         [(> (length params) 6)
+          (match params
+            [(list `(,var-names : ,var-types) ...)
+             (for ([i (in-range 5 (length params))])
+               (dict-set! param-tup-map (list-ref var-names i) (Prim 'vector-ref (list (Var extra-param-tup) (Int (- i 5))))))
+             (let ([extra-tup-type (cons 'Vector
+                                          (for/list ([i (in-range 5 (length params))])
+                                            (list-ref var-types i)))])
+               (Def f
+                    (append (take params 5) (list `(,extra-param-tup : ,extra-tup-type)))
+                    ret-type
+                    info
+                    (limit-functions-exp body param-tup-map)))])]
+         [else (Def f params ret-type info (limit-functions-exp body param-tup-map))]))]
+    [_
+     error
+     ("limit-functions-def unhandled case" def)]))
+
+
+(define (limit-functions-exp exp tuple-param-map)
+  (match exp
+    [(Int _) exp]
+    [(Bool _) exp]
+    [(Void) exp]
+    [(Var x) (if (dict-has-key? tuple-param-map x) (dict-ref tuple-param-map x) exp)]
+    [(Prim op es)
+     (Prim op
+           (for/list ([e es])
+             (limit-functions-exp e tuple-param-map)))]
+    [(Let x e body)
+     (Let x (limit-functions-exp e tuple-param-map) (limit-functions-exp body tuple-param-map))]
+    [(If a b c)
+     (If (limit-functions-exp a tuple-param-map)
+         (limit-functions-exp b tuple-param-map)
+         (limit-functions-exp c tuple-param-map))]
+    [(SetBang x e) (SetBang x (limit-functions-exp e tuple-param-map))]
+    [(GetBang x) (GetBang (limit-functions-exp x tuple-param-map))]
+    [(Begin es body)
+     (Begin (for/list ([e es])
+              (limit-functions-exp e tuple-param-map))
+            (limit-functions-exp body tuple-param-map))]
+    [(WhileLoop exp1 exp2)
+     (WhileLoop (limit-functions-exp exp1 tuple-param-map)
+                (limit-functions-exp exp2 tuple-param-map))]
+    [(Def f params ret-type info body) (limit-functions-def (Def f params ret-type info body))]
+    [(Apply f es)
+     (printf "Apply: ~a\n" es)
+     (printf "Length: ~a\n" (length es))
+     (cond
+       [(> (length es) 5)
+        (let ([extra-param-tup (gensym 'extra-param-tup)])
+          (Let extra-param-tup
+               (Prim 'vector
+                     (map (curryr limit-functions-exp tuple-param-map)
+                          (for/list ([i (in-range 5 (length es))])
+                            (list-ref es i))))
+               (Apply f (append (take es 5) (list (Var extra-param-tup))))))]
+
+       [else
+        (Apply f
+               (for/list ([e es])
+                 (limit-functions-exp e tuple-param-map)))])]))
+
+
+
 (define (expose-allocation-def def)
   (match def
      [(Def f params ret-type info exp) (Def f params ret-type info ((expose-allocation-exp '()) exp))]))
@@ -932,6 +1007,7 @@
     ("shrink" ,shrink ,interp-Lfun,type-check-Lfun)
     ("uniquify" ,uniquify ,interp-Lfun, type-check-Lfun)
     ("reveal functions" ,reveal-functions,interp-Lfun-prime, type-check-Lfun)
+    ("limit functions", limit-functions, interp-Lfun-prime, type-check-Lfun)
     ("expose-allocation" ,expose-allocation ,interp-Lfun-prime, type-check-Lfun)
     ("uncover-get!" ,uncover-get!,interp-Lfun-prime, type-check-Lfun)
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun-prime,type-check-Lfun)
@@ -943,25 +1019,3 @@
     ;;; ("patch instructions" ,patch-instructions ,#f)
     ;;; ("prelude-and-conclusion" ,prelude-and-conclusion ,#f)
     ))
-
-;;; (define compiler-passes
-;;;   ;; Uncomment the following passes as you finish them.
-;;;   `(
-;;;     ("shrink" ,shrink ,interp-Lfun,type-check-Lfun)
-;;;     ("uniquify" ,uniquify ,interp-Lfun, type-check-Lfun)
-;;;     ("reveal functions" ,reveal-functions,interp-Lfun-prime, type-check-Lfun)
-;;;     ; ("uncover-get!" ,uncover-get!,interp-Lvec, type-check-Lvec-has-type)
-;;;     ; ("expose-allocation" ,expose-allocation ,interp-Lvec-prime, type-check-Lvec)
-;;;     ; ;;; ("shrink" ,shrink ,interp-Lwhile,type-check-Lwhile)
-;;;     ; ;;; ("uniquify" ,uniquify ,interp-Lwhile, type-check-Lwhile)
-;;;     ; ;;; ("uncover-get!" ,uncover-get!,interp-Lwhile, type-check-Lwhile)
-;;;     ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvec-prime,type-check-Lvec)
-;;;     ; ("explicate control" ,explicate-control ,interp-Cvec,type-check-Cvec)
-;;;     ; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
-;;;     ; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
-;;;     ; ("build interference" ,build-interference ,interp-pseudo-x86-2)
-;;;     ; ("allocate registers", allocate-registers ,#f)
-;;;     ; ;;; ; ("assign homes" ,assign-homes ,interp-x86-0)
-;;;     ; ("patch instructions" ,patch-instructions ,#f)
-;;;     ; ("prelude-and-conclusion" ,prelude-and-conclusion ,#f)
-;;;     ))
