@@ -69,7 +69,7 @@
 	   (let [(sub-env (dict-copy env))]
 		(for [(p param)]
 		  (dict-set! sub-env (extract-var p) (gensym (extract-var p))))
-		(println sub-env)
+		; (println sub-env)
 		(Def (dict-ref env f) (for/list [(p param)]
 							   (match p [(quasiquote [,var : ,type]) `[,(dict-ref sub-env var) : ,type]]))
 			 type info ((uniquify-exp sub-env) exp))
@@ -232,8 +232,8 @@
                 (limit-functions-exp exp2 tuple-param-map))]
     [(Def f params ret-type info body) (limit-functions-def (Def f params ret-type info body))]
     [(Apply f es)
-     (printf "Apply: ~a\n" es)
-     (printf "Length: ~a\n" (length es))
+     ; ( printf "Apply: ~a\n" es)
+     ; ( printf "Length: ~a\n" (length es))
      (cond
        [(> (length es) 5)
         (let ([extra-param-tup (gensym 'extra-param-tup)])
@@ -325,9 +325,19 @@
       [(SetBang var exp) (SetBang var ((remove-complex-opera-exp env) exp))]
       [(GetBang x) (Var x)]
       [(If a b c)
-       (If ((remove-complex-opera-exp env) a)
+	   (match a
+		[(Apply _ _) (let ([x (gensym 'tmp)])
+					   (Let x ((remove-complex-opera-exp env) a)
+							(If (Var x)
+								((remove-complex-opera-exp env) b)
+								((remove-complex-opera-exp env) c)
+							)
+						))]
+		[_ (If ((remove-complex-opera-exp env) a)
            ((remove-complex-opera-exp env) b)
-           ((remove-complex-opera-exp env) c))]
+           ((remove-complex-opera-exp env) c))])]
+      ; [(If a b c)
+      ;  (rco_helper (If a b c) env '() (list a b c))]
       [(Let x e body)
        (Let x ((remove-complex-opera-exp env) e) ((remove-complex-opera-exp env) body))]
       [(Prim op es)
@@ -339,6 +349,14 @@
 
 (define (rco_helper exp rco-env env operands)
   (match exp
+	; [(If a b c)
+	; 	 (if (empty? operands)
+	; 		 (If (dict-ref env a) (dict-ref env b) (dict-ref env c))
+	; 		 (match (first operands)
+	; 		   [(? atm? op) (rco_helper exp rco-env (dict-set env op op) (rest operands))]
+	; 		   [op
+	; 			(let ([x (gensym 'tmp)])
+	; 			  (Let x ((remove-complex-opera-exp rco-env) op) (rco_helper exp rco-env (dict-set env op (Var x)) (rest operands))))]))]
     [(Prim op es)
      (if (empty? operands)
          (Prim op
@@ -480,7 +498,7 @@
   (match p
     [(ProgramDefs info defs) (ProgramDefs info (map explicate-def defs))]))
 
-arg-registers
+
 (define (select-move-args es)
   (for/list ([i (in-range (length es))])
     (Instr 'movq (list (select-atm (list-ref es i)) (Reg (vector-ref arg-registers i))))))
@@ -512,12 +530,10 @@ arg-registers
   (define list-types (match types [`(Vector ,a ...) a]))
   (define mask 0)
 
-  ;;; (for ([t list-types]) (displayln t))
   (for ([t list-types] [i (in-range (length list-types))])
     (let ([tag (if (eq? t 'Vector) 1 0)])
       (set! mask (bitwise-ior mask (arithmetic-shift tag i)))))
 
-  (displayln mask)
   (bitwise-ior (bitwise-ior (arithmetic-shift mask 7) (arithmetic-shift (length list-types) 1)) 1)  
 )
 
@@ -673,20 +689,34 @@ arg-registers
     [(Instr name (list (Deref reg offset1) (Deref reg offset2)))
      (list (Instr 'movq (list (Deref reg offset1) (Reg 'rax)))
            (Instr name (list (Reg 'rax) (Deref reg offset2))))]
+	[(TailJmp var fun) #:when (not (equal? var (Reg 'rax)))
+	 (list (Instr 'movq (list var (Reg 'rax))) (TailJmp (Reg 'rax) fun))]
     [_ (list instr)]))
-
-;; patch-instructions : x86var -> x86int
-(define (patch-instructions p)
-  (match p
-    ;;; [(X86Program info (list (cons label (Block block-info instrs))))
-    [(X86Program info (list (cons label-list (Block block-info-list instrs-list)) ...))
-     (X86Program info
-                 (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
+(define (patch-instructions-def def)
+	(match def
+	  [(Def f param type info (list (cons label-list (Block block-info-list instrs-list)) ...))
+	   (Def f param type info (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
                    (cons label
                          (Block block-info
                                 (foldr (lambda (instr acc) (append (patch-instruction instr) acc))
                                        '()
                                        instrs)))))]))
+;; patch-instructions : x86var -> x86int
+(define (patch-instructions p)
+  (match p
+	[(X86ProgramDefs info defs) (X86ProgramDefs info (map patch-instructions-def defs))])
+  )
+; (define (patch-instructions p)
+;   (match p
+;     ;;; [(X86Program info (list (cons label (Block block-info instrs))))
+;     [(X86Program info (list (cons label-list (Block block-info-list instrs-list)) ...))
+;      (X86Program info
+;                  (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
+;                    (cons label
+;                          (Block block-info
+;                                 (foldr (lambda (instr acc) (append (patch-instruction instr) acc))
+;                                        '()
+;                                        instrs)))))]))
 
 
 ;(error "TODO: code goes here (patch-instructions)"))
@@ -743,13 +773,15 @@ arg-registers
 
 (define caller-saved (set 'rax 'rcx 'rdx 'rsi 'rdi 'r8 'r9 'r10 'r11))
 (define callee-saved (set 'rsp 'rbp 'rbx 'r12 'r13 'r14 'r15))
-
+(define (decomp-bytereg byte)
+	(match byte
+	  ['al 'rax]))
 (define (locations-appear args)
   (if (empty? args)
       (set)
       (match (first args)
         [(Reg a) (set-add (locations-appear (rest args)) a)]
-        [(ByteReg a) (set-add (locations-appear (rest args)) a)]
+        [(ByteReg a) (set-add (locations-appear (rest args)) (decomp-bytereg a))]
         [(Var a) (set-add (locations-appear (rest args)) a)]
         [(Imm a) (locations-appear (rest args))]
         [(Global a) (locations-appear (rest args))]
@@ -758,6 +790,7 @@ arg-registers
 (define (locations-read-by-instr instr)
   (match instr
     [(Instr 'addq (list arg1 arg2)) (locations-appear (list arg1 arg2))]
+    [(Instr 'leaq (list arg1 arg2)) (locations-appear (list arg1))]
     [(Instr 'subq (list arg1 arg2)) (locations-appear (list arg1 arg2))]
     [(Instr 'negq (list arg)) (locations-appear (list arg))]
     [(Instr 'movq (list arg1 arg2)) (locations-appear (list arg1))]
@@ -767,6 +800,9 @@ arg-registers
     [(Instr 'xorq (list arg1 arg2)) (locations-appear (list arg1 arg2))]
     [(Instr 'set (list arg1 arg2)) (set)]
     [(Instr 'movzbq (list arg1 arg2)) (locations-appear (list arg1))]
+    [(Callq name num) (list->set (vector->list (vector-take arg-registers num)))]
+    [(IndirectCallq name num) (set-union (locations-appear (list name)) (list->set (vector->list (vector-take arg-registers num))))]
+    [(TailJmp name num) (set-union (locations-appear (list name)) (list->set (vector->list (vector-take arg-registers num))))]
     [_ (set)]))
 
 ;;; still dont know what to do with jmp, callq, retq
@@ -774,6 +810,7 @@ arg-registers
 (define (locations-write-by-instr instr)
   (match instr
     [(Instr 'addq (list arg1 arg2)) (locations-appear (list arg2))]
+    [(Instr 'leaq (list arg1 arg2)) (locations-appear (list arg2))]
     [(Instr 'subq (list arg1 arg2)) (locations-appear (list arg2))]
     [(Instr 'negq (list arg)) (locations-appear (list arg))]
     [(Instr 'movq (list arg1 arg2)) (locations-appear (list arg2))]
@@ -784,38 +821,56 @@ arg-registers
     [(Instr 'xorq (list arg1 arg2)) (locations-appear (list arg2))]
     [(Instr 'set (list arg1 arg2)) (locations-appear (list arg2))]
     [(Instr 'movzbq (list arg1 arg2)) (locations-appear (list arg2))]
-    [(Callq name num) (caller-saved)]
+    [(Callq name num) caller-saved]
+    [(IndirectCallq name num) caller-saved]
+    [(TailJmp name num) caller-saved]
     [_ (set)]))
 
 (define live-before-label (make-hash))
 (define (uncover-live-instrs instrs init-live-after)
   (foldr
    (lambda (instr acc)
+     (displayln acc)
      (match instr
        [(JmpIf _ label) (cons (set-union (dict-ref live-before-label label) (first acc)) acc)]
-       [(Jmp label) (cons (dict-ref live-before-label label) acc)]
+       [(Jmp label) 
+        (cons (dict-ref live-before-label label) acc)]
        [_
         (cons (set-union (set-subtract (first acc) (locations-write-by-instr instr))
                          (locations-read-by-instr instr))
               acc)]))
-   (list init-live-after)
+   init-live-after
    instrs))
  (define ((do-uncover dict-label-block) block-label init-live-after)
    (match (dict-ref dict-label-block block-label) 
      [(Block block-info instrs)
-      (let ([live-sets (uncover-live-instrs instrs (list init-live-after))])
+      (let ([live-sets (uncover-live-instrs instrs init-live-after)])
        (dict-set! dict-label-block block-label (Block (dict-set block-info 'live-after (rest live-sets)) instrs))
          (first live-sets))]))
- (define (uncover-live p)
-   (dict-clear! live-before-label)
-   (match p
-     [(X86Program pinfo dict-label-block)
-        (let ([label-list (hash-keys dict-label-block)] [block-list (hash-values dict-label-block)])
+(define (uncover-live-def def)
+  (dict-clear! live-before-label)
+  (match def
+  [(Def f param type info dict-label-block-temp) 
+   (define dict-label-block (make-hash dict-label-block-temp))
+   (let ([label-list (hash-keys dict-label-block)] [block-list (hash-values dict-label-block)])
  		(match block-list
  		  [(list (Block block-info-list instrs-list) ...)
  			(dict-set! live-before-label 'conclusion (set 'rax 'rsp))
            (analyze_dataflow (transpose (gen-cfg label-list instrs-list)) (do-uncover dict-label-block) (set) set-union)
-             (X86Program (dict-set pinfo 'live live-before-label) dict-label-block)]))]))
+             (Def f param type (dict-set info 'live live-before-label) (hash->list dict-label-block))]))]))
+
+ (define (uncover-live p)
+   (dict-clear! live-before-label)
+   (match p
+     ; [(X86ProgramDefs pinfo dict-label-block)]
+     [(X86ProgramDefs pinfo defs)
+      (X86ProgramDefs pinfo (map uncover-live-def defs))]))
+    ;     (let ([label-list (hash-keys dict-label-block)] [block-list (hash-values dict-label-block)])
+ 		; (match block-list
+ 		;   [(list (Block block-info-list instrs-list) ...)
+ 		; 	(dict-set! live-before-label 'conclusion (set 'rax 'rsp))
+    ;        (analyze_dataflow (transpose (gen-cfg label-list instrs-list)) (do-uncover dict-label-block) (set) set-union)
+    ;          (X86Program (dict-set pinfo 'live live-before-label) dict-label-block)]))]))
 
 (define (analyze_dataflow G transfer bottom join)
   (for ([v (in-vertices G)])
@@ -862,7 +917,7 @@ arg-registers
     [(Deref b c) b]
     [(Global b) b]
     [(Imm b) '()]
-    [(ByteReg b) b]
+    [(ByteReg b) (decomp-bytereg b)]
     [_ a]))
 
 (define (collect-edges-live-after live-after locals-types)
@@ -872,7 +927,6 @@ arg-registers
              [else 
               (match (dict-ref locals-types var)
                 [`(Vector ,a ...)
-                  (println "Found vector")
                  (append (temp (set (decompose var)) (set-union callee-saved caller-saved)) prev)]
                 [else (append (temp (set (decompose var)) caller-saved) prev)])]))
          '()
@@ -900,17 +954,28 @@ arg-registers
     (for ([edge (build-interference-block instrs (dict-ref block-info 'live-after) locals-types)])
       (add-edge! graph (first edge) (last edge))))
   graph)
-
-(define (build-interference p)
-  (match p
-	[(X86Program info dict-label-block)
-	 (let ([label-list (hash-keys dict-label-block)] [block-list (hash-values dict-label-block)])
+(define (build-interference-def def)
+  (match def
+    [(Def f param type info dict-label-block-temp) 
+     (define dict-label-block (make-hash dict-label-block-temp))
+     (let ([label-list (hash-keys dict-label-block)] [block-list (hash-values dict-label-block)])
 		(match block-list
 		  [(list (Block block-info-list instrs-list)...)
-			 (X86Program (dict-set info 'conflicts (build-graph block-info-list instrs-list (dict-ref info 'locals-types)))
+			 (Def f param type (dict-set info 'conflicts (build-graph block-info-list instrs-list (dict-ref info 'locals-types)))
 						 (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
 						   (cons label (Block block-info instrs))))
 		   ]))]))
+
+(define (build-interference p)
+  (match p
+	[(X86ProgramDefs info defs) (X86ProgramDefs info (map build-interference-def defs))]))
+	;  (let ([label-list (hash-keys dict-label-block)] [block-list (hash-values dict-label-block)])
+	; 	(match block-list
+	; 	  [(list (Block block-info-list instrs-list)...)
+	; 		 (X86Program (dict-set info 'conflicts (build-graph block-info-list instrs-list (dict-ref info 'locals-types)))
+	; 					 (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
+	; 					   (cons label (Block block-info instrs))))
+	; 	   ]))]))
 
 (define (calc-offset num)
   (- (* (- num 6) 8)))
@@ -935,7 +1000,7 @@ arg-registers
                                     (dict-set! root-stack-assignment a (- root-stack-spills 1))
                                     (dict-ref root-stack-assignment a)]
                                    [else (dict-ref root-stack-assignment a)])])
-                (print "Assigning root stack offset: ") (print a) (print " ") (println root-offset)
+                ; (print "Assigning root stack offset: ") (print a) (print " ") (println root-offset)
                 (Deref 'r15 (* 8 root-offset)))]
              [_
               (let ([stack-offset (cond
@@ -944,7 +1009,7 @@ arg-registers
                                      (dict-set! stack-assignment a (- stack-spills))
                                      (dict-ref stack-assignment a)]
                                     [else (dict-ref stack-assignment a)])])
-                (print "Assigning stack offset: ") (print a) (print " ") (println stack-offset)
+                ; (print "Assigning stack offset: ") (print a) (print " ") (println stack-offset)
                 (Deref 'rbp (* 8 stack-offset)))])
            (Reg (color->register (dict-ref color a)))))]
     [_ reg]))
@@ -954,6 +1019,8 @@ arg-registers
 
 (define (allocate-instr instr color locals-types)
   (match instr
+    [(TailJmp name num) (TailJmp (allocate-reg name color locals-types) num)]
+    [(IndirectCallq name num) (IndirectCallq (allocate-reg name color locals-types) num)]
     [(Instr name arg*)
      (Instr name
             (for/list ([a arg*])
@@ -964,32 +1031,47 @@ arg-registers
   (for/list ([instr instrs])
     (allocate-instr instr color locals-types)))
 
-(define (allocate-registers p)
-  ;;; (set! stack-spills 0)
-  ;;; (set! root-stack-spills 0)
-
-  (match p
-    [(X86Program info (list (cons label-list (Block block-info-list instrs-list)) ...))
+(define (allocate-def def)
+  (match def
+	[(Def f param type info (list (cons label-list (Block block-info-list instrs-list)) ...)) 
      (define-values (color callee-used)
        (graph-coloring (dict-ref info 'conflicts) (dict-ref info 'locals-types)))
-     (let ([new-blocks
-            (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
-              (cons label
-                    (Block block-info (allocate-block instrs color (dict-ref info 'locals-types)))))])
-       (X86Program (dict-set (dict-set (dict-set info 'callee-used (set->list callee-used))
-                                       'stack-space
-                                       ;;;  (* (max 0 (- (max-color color) 10)) 8)
-                                       (* 8 stack-spills))
-                             'root-stack-space
-                             (* 8 root-stack-spills))
-                   new-blocks))]))
+       (let ([new-blocks
+              (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
+                (cons label
+                      (Block block-info (allocate-block instrs color (dict-ref info 'locals-types)))))])
+         (Def f param type (dict-set (dict-set (dict-set info 'callee-used (set->list callee-used))
+                                         'stack-space
+                                         (* 8 stack-spills))
+                               'root-stack-space
+                               (* 8 root-stack-spills))
+                     new-blocks))]))
+(define (allocate-registers p)
+  (match p
+    [(X86ProgramDefs info defs) (X86ProgramDefs info (map allocate-def defs))]))
+
+; (define (allocate-registers p)
+;   (match p
+;     [(X86ProgramDefs info (list (cons label-list (Block block-info-list instrs-list)) ...))
+;      (define-values (color callee-used)
+;        (graph-coloring (dict-ref info 'conflicts) (dict-ref info 'locals-types)))
+;      (let ([new-blocks
+;             (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
+;               (cons label
+;                     (Block block-info (allocate-block instrs color (dict-ref info 'locals-types)))))])
+;        (X86ProgramDefs (dict-set (dict-set (dict-set info 'callee-used (set->list callee-used))
+;                                        'stack-space
+;                                        (* 8 stack-spills))
+;                              'root-stack-space
+;                              (* 8 root-stack-spills))
+;                    new-blocks))
+; 	 ]))
 
 
 (define (max-color ls)
   (foldl (lambda (a b) (max (cdr a) b)) 0 ls))
 
 (define (graph-coloring graph var-list)
-  ;;; (displayln (stream->list (in-edges graph)))
   (define color (make-hash))
   (define pq-handle (make-hash))
   (define used (make-hash))
@@ -1038,9 +1120,13 @@ arg-registers
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun-prime,type-check-Lfun)
     ("explicate control" ,explicate-control ,interp-Cfun,type-check-Cfun)
     ("instruction selection" ,select-instructions ,interp-pseudo-x86-3)
-    ;;; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
-    ;;; ("build interference" ,build-interference ,interp-pseudo-x86-2)
-    ;;; ("allocate registers", allocate-registers ,#f)
-    ;;; ("patch instructions" ,patch-instructions ,#f)
-    ;;; ("prelude-and-conclusion" ,prelude-and-conclusion ,#f)
+    ("uncover live" ,uncover-live ,interp-pseudo-x86-3)
+    ("build interference" ,build-interference ,interp-pseudo-x86-3)
+    ("allocate registers", allocate-registers ,interp-x86-3)
+    ("patch instructions" ,patch-instructions ,interp-x86-3)
+    ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-3)
     ))
+
+
+
+
