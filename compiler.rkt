@@ -480,6 +480,11 @@
   (match p
     [(ProgramDefs info defs) (ProgramDefs info (map explicate-def defs))]))
 
+arg-registers
+(define (select-move-args es)
+  (for/list ([i (in-range (length es))])
+    (Instr 'movq (list (select-atm (list-ref es i)) (Reg (vector-ref arg-registers i))))))
+
 (define (select-tail e)
   (match e
     [(Seq s t) (append (select-stmt s) (select-tail t))]
@@ -499,7 +504,9 @@
      (list (Instr 'cmpq (list (select-atm b) (select-atm a))) (JmpIf 'le thn) (Jmp els))]
     [(IfStmt (Prim cmp (list (? atm? a) (? atm? b))) (Goto thn) (Goto els))
      #:when (equal? cmp '>=)
-     (list (Instr 'cmpq (list (select-atm b) (select-atm a))) (JmpIf 'ge thn) (Jmp els))]))
+     (list (Instr 'cmpq (list (select-atm b) (select-atm a))) (JmpIf 'ge thn) (Jmp els))]
+    [(TailCall f es) (append (select-move-args es) (list (TailJmp f (length es))))] 
+    ))
 
 (define (gen-vector-tag types)
   (define list-types (match types [`(Vector ,a ...) a]))
@@ -536,6 +543,10 @@
      (if (atm? e)
          (list (Instr 'movq (list (select-atm e) x)))
          (match e
+           [(Call f es)
+            (append (select-move-args es)
+                    (list (IndirectCallq f (length es)) (Instr 'movq (list (Reg 'rax) x))))]
+           [(FunRef f n) (list (Instr 'leaq (list (Global f) x)))]
            [(GlobalValue x^) (list (Instr 'movq (list (Global x^) x)))]
            [(Allocate n type)
             (list (Instr 'movq (list (Global 'free_ptr) (Reg 'r11)))
@@ -590,13 +601,26 @@
                   (Instr 'andq (list (Imm 63) (Reg 'rax)))
                   (Instr 'movq (list (Reg 'rax) x)))]))]))
 
-(define (select-instructions p)
-  (match p
-    [(CProgram info (list (cons label-list tail-list) ...))
-     (X86Program info
-                 (make-hash (for/list ([label label-list] [tail tail-list])
-					(cons label (Block '() (select-tail tail))))))]))
+(define (move-params-to-reg body params func-name block-name)
+  (if (equal? (symbol-append func-name '_start) block-name)
+      (append (for/list ([i (in-range (length params))])
+                (Instr 'movq (list (Reg (vector-ref arg-registers i)) (Var (extract-var (list-ref params i))))))
+              body)
+      body))
 
+(define (select-instructions-def def)
+  (match def
+    [(Def f param type info (list (cons label-list tail-list) ...))
+    (Def f '() 'Integer (dict-set info 'num-params (length param)) (for/list ([label label-list] [tail tail-list])
+          (cons label (Block '() (move-params-to-reg (select-tail tail) param f label)))))]))
+
+(define (select-instructions p)
+  (match p 
+    [(ProgramDefs info defs)
+      (X86ProgramDefs info (map select-instructions-def defs))
+    ]
+  )
+)
 (define (assign-var-offset var-list)
   (match var-list
     ['() (values '() 0)]
@@ -1007,12 +1031,12 @@
     ("shrink" ,shrink ,interp-Lfun,type-check-Lfun)
     ("uniquify" ,uniquify ,interp-Lfun, type-check-Lfun)
     ("reveal functions" ,reveal-functions,interp-Lfun-prime, type-check-Lfun)
-    ("limit functions", limit-functions, interp-Lfun-prime, type-check-Lfun)
+    ("limit functions", limit-functions, interp-Lfun-prime, type-check-Lfun-has-type)
     ("expose-allocation" ,expose-allocation ,interp-Lfun-prime, type-check-Lfun)
     ("uncover-get!" ,uncover-get!,interp-Lfun-prime, type-check-Lfun)
     ("remove complex opera*" ,remove-complex-opera* ,interp-Lfun-prime,type-check-Lfun)
     ("explicate control" ,explicate-control ,interp-Cfun,type-check-Cfun)
-    ;;; ("instruction selection" ,select-instructions ,interp-pseudo-x86-2)
+    ("instruction selection" ,select-instructions ,interp-pseudo-x86-3)
     ;;; ("uncover live" ,uncover-live ,interp-pseudo-x86-2)
     ;;; ("build interference" ,build-interference ,interp-pseudo-x86-2)
     ;;; ("allocate registers", allocate-registers ,#f)
