@@ -779,22 +779,41 @@
      (list (Instr 'movq (list (Imm i) (Reg 'rax))) (Instr name (list (Reg 'rax) (Deref reg offset))))]
     [(Instr name (list (Deref reg offset) (Imm (? big-int? i))))
      (list (Instr 'movq (list (Imm i) (Reg 'rax))) (Instr name (list (Deref reg offset) (Reg 'rax))))]
-    [(Instr name (list (Deref reg offset1) (Deref reg offset2)))
-     (list (Instr 'movq (list (Deref reg offset1) (Reg 'rax)))
-           (Instr name (list (Reg 'rax) (Deref reg offset2))))]
-	[(TailJmp var fun) #:when (not (equal? var (Reg 'rax)))
-	 (list (Instr 'movq (list var (Reg 'rax))) (TailJmp (Reg 'rax) fun))]
+    [(Instr name (list (Deref reg1 offset1) (Deref reg2 offset2)))
+     (list (Instr 'movq (list (Deref reg1 offset1) (Reg 'rax)))
+           (Instr name (list (Reg 'rax) (Deref reg2 offset2))))]
+    [(TailJmp var fun)
+     #:when (not (equal? var (Reg 'rax)))
+     (list (Instr 'movq (list var (Reg 'rax))) (TailJmp (Reg 'rax) fun))]
     [_ (list instr)]))
+
+;;; (define (patch-instructions-def def)
+;;; 	(match def
+;;; 	  [(Def f param type info (list (cons label-list (Block block-info-list instrs-list)) ...))
+;;; 	   (Def f param type info (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
+;;;                    (cons label
+;;;                          (Block block-info
+;;;                                 (apply append (for/list ([instr instrs])
+;;;                                                  (patch-instruction instr)))))))]))
+
 (define (patch-instructions-def def)
-	(match def
-	  [(Def f param type info (list (cons label-list (Block block-info-list instrs-list)) ...))
-	   (Def f param type info (for/list ([label label-list] [block-info block-info-list] [instrs instrs-list])
-                   (cons label
-                         (Block block-info
-                                (foldr (lambda (instr acc) (append (patch-instruction instr) acc))
-                                       '()
-                                       instrs)))))]))
+  (match def
+    [(Def f param type info (list block-lst ...))
+     (Def f
+          param
+          type
+          info
+          (for/list ([block block-lst])
+            (printf "rainy-bess-block: ~a\n" block)
+            (match block
+              [(cons label (Block info instrs))
+               (cons label
+                     (Block info
+                            (apply append
+                                   (for/list ([instr instrs])
+                                     (patch-instruction instr)))))])))]))
 ;; patch-instructions : x86var -> x86int
+
 (define (patch-instructions p)
   (match p
     [(X86ProgramDefs info defs) (X86ProgramDefs info (map patch-instructions-def defs))]))
